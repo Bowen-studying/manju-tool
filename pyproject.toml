@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "manju-tool"
+version = "0.1.0"
+description = "AI 漫剧生成工具 — 小说转 AI 短视频流水线"
+authors = [
+    {name = "Bowen", email = "bowen@example.com"},
+]
+license = {text = "MIT"}
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "click>=8.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Bowen-studying/manju-tool"
+
+[project.scripts]
+manju = "manju.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["manju*"]
