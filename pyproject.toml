@@ -4,20 +4,37 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "manju-tool"
-version = "0.1.0"
-description = "AI 漫剧生成工具 — 小说转 AI 短视频流水线"
+version = "0.2.0"
+description = "AI 漫剧制作 CLI — 从文字到分镜/配音/视频，一条命令"
 authors = [
-    {name = "Bowen", email = "bowen@example.com"},
+    {name = "manju", email = "manju@example.com"},
 ]
 license = {text = "MIT"}
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "click>=8.0",
+    "openpyxl>=3.0",
+    "python-docx>=1.0",
+    "weasyprint>=60.0",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Artistic Software",
 ]
 
 [project.urls]
 Homepage = "https://github.com/Bowen-studying/manju-tool"
+Repository = "https://github.com/Bowen-studying/manju-tool"
+Issues = "https://github.com/Bowen-studying/manju-tool/issues"
 
 [project.scripts]
 manju = "manju.cli:main"
