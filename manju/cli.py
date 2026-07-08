@@ -14,6 +14,7 @@ from manju.pipeline.video import run_video
 from manju.pipeline.voice import run_voice
 from manju.pipeline.generate_video import run_generate
 from manju.pipeline.generate_image import run_image
+from manju.pipeline.generate_voice import run_speak, run_batch_speak
 from manju.utils.use_guide import write_use_guide
 
 OUTPUT_BASE = os.path.join(os.getcwd(), "manju-output")
@@ -182,14 +183,21 @@ def video(storyboard_json, output_dir):
 @click.argument("storyboard_json", type=click.Path(exists=True))
 @click.option("-o", "--output-dir", default=None,
               help="输出目录（默认与 storyboard.json 同目录）")
-def voice(storyboard_json, output_dir):
-    """配音脚本：读取分镜JSON → 提取对白 → 情绪推断 → TTS参数。
+@click.option("--speak/--no-speak", default=False,
+              help="生成配音音频文件")
+def voice(storyboard_json, output_dir, speak):
+    """配音脚本：读取分镜JSON → 提取对白 → 情绪推断。
 
-    输出 voice_scripts.json + voice_scripts.md"""
+    输出 voice_scripts.json + voice_scripts.pdf。
+    加 --speak 同时生成 MP3 音频。"""
     try:
         result = run_voice(storyboard_json, output_dir=output_dir)
         if result is not None:
             click.echo("\n✅ 配音脚本完成")
+            if speak:
+                vdir = output_dir or os.path.dirname(os.path.abspath(storyboard_json))
+                n = run_batch_speak(result, vdir)
+                click.echo(f"\n🎙️  配音完成: {n} 个音频")
         else:
             click.echo("\n❌ 生成失败", err=True)
             sys.exit(1)
@@ -274,6 +282,48 @@ def image(prompt, image, size, output_dir, name):
             click.echo(f"\n✅ 图片已保存: {result}")
         else:
             click.echo("\n⚠ 图片生成失败", err=True)
+    except KeyboardInterrupt:
+        click.echo("\n⚠ 用户中断")
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"\n❌ 出错: {e}", err=True)
+        sys.exit(1)
+
+
+# ── 配音生成 ──────────────────────────────────────────────────────────────────
+
+@cli.command("speak")
+@click.argument("text")
+@click.option("-v", "--voice", default="xiaoxiao",
+              help="音色 (xiaoxiao/yunxi/yunjian/yunyang/xiaoyi/yunxia)")
+@click.option("--speed", type=float, default=1.0,
+              help="语速 (0.25-4.0, 默认1.0)")
+@click.option("--pitch", type=int, default=5,
+              help="声调 1-10 (默认5)")
+@click.option("--volume", type=int, default=5,
+              help="音量 1-10 (默认5)")
+@click.option("-o", "--output-dir", default=None,
+              help="输出目录")
+@click.option("-n", "--name", default="",
+              help="输出文件名（不含扩展名）")
+def speak(text, voice, speed, pitch, volume, output_dir, name):
+    """文字转语音：文本 → MP3音频。
+
+    零配置即可使用（需 pip install edge-tts）。
+    也可在 ~/.manju.env 中配置自选API：
+      MANJU_VOICE_API_KEY=sk-...
+      MANJU_VOICE_API_BASE=https://...
+    """
+    try:
+        result = run_speak(
+            text, voice=voice, speed=speed,
+            pitch=pitch, volume=volume,
+            output_dir=output_dir, output_name=name,
+        )
+        if result:
+            click.echo(f"\n✅ 音频已保存: {result}")
+        else:
+            click.echo("\n⚠ 生成失败", err=True)
     except KeyboardInterrupt:
         click.echo("\n⚠ 用户中断")
         sys.exit(1)

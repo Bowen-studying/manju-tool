@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/version-0.3.0-orange" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.4.0-orange" alt="Version">
 </p>
 
 # manju
@@ -29,6 +29,10 @@ export MANJU_IMAGE_API_KEY="your-key"
 export MANJU_IMAGE_API_BASE="https://your-api.example.com/v1"
 export MANJU_VIDEO_API_KEY="your-key"
 export MANJU_VIDEO_API_BASE="https://your-api.example.com/v1"
+
+# 配音（可选，不配则使用免费方案）
+export MANJU_VOICE_API_KEY="your-key"
+export MANJU_VOICE_API_BASE="https://your-api.example.com/v1"
 ```
 
 或者写入 `~/.manju.env`，以后不用每次 export。
@@ -50,6 +54,9 @@ manju image "极光下的雪山小屋，暖黄灯光从窗户透出"
 
 # 生视频
 manju generate "雪夜中一匹白马缓缓走过森林，电影质感"
+
+# 文字转语音
+manju speak "欢迎收听今天的节目"
 ```
 
 ## 它做什么
@@ -58,10 +65,12 @@ manju generate "雪夜中一匹白马缓缓走过森林，电影质感"
 |---|---|---|---|
 | 剧本 | `adapt` / `create` | 小说 / 你的想法 | 结构化剧本 |
 | 分镜 | `storyboard` | 剧本 | xlsx 分镜表 |
-| 配音 | `voice` | 分镜 | pdf 配音脚本 |
+| 配音脚本 | `voice` | 分镜 | pdf 配音脚本 |
+| 配音音频 | `voice --speak` | 分镜 | mp3 音频文件 |
 | 视频提示词 | `video` | 分镜 | pdf 中英双版视频提示词 |
 | 生图 | `image` | 文字描述 | png 图片 |
 | 生视频 | `generate` | 文字/文字+图片 | mp4 视频 |
+| 文字转语音 | `speak` | 文字 | mp3 音频 |
 | 全部 | `pipeline` | 任意起点 | 以上全部 + 使用指南 pdf |
 
 每一步可以单独用。`pipeline` 末尾自动生成使用指南，告诉你怎么把输出用到后续制作里。
@@ -104,6 +113,33 @@ manju generate "..." --frames 241 --fps 24 --size 1024x576
 参数：`--frames`（默认 121≈5 秒），`--fps`（默认 24），`--size`（默认 768x512）。
 
 接入任意兼容的视频生成 API 即可使用。
+
+## 配音
+
+从分镜提取对白，推断情绪，生成配音脚本。加 `--speak` 直接出音频。
+
+```bash
+# 只生成配音脚本（PDF）
+manju voice storyboard.json
+
+# 生成脚本 + 音频文件
+manju voice storyboard.json --speak
+```
+
+情绪自动推断：LLM 分析上下文区分"这个'！'是愤怒还是冷笑"。每种情绪自动映射到语速、声调、音量参数。
+
+```bash
+# 单独文字转语音（不经过分镜）
+manju speak "欢迎大家来到今天的节目" -v xiaoxiao
+
+# 指定情绪参数
+manju speak "快跑！" --speed 1.6 --pitch 8 --volume 9 -v yunjian
+
+# 温柔叙述
+manju speak "晚安..." --speed 0.7 --pitch 3
+```
+
+零配置即可使用。也可在 `~/.manju.env` 中接入自选语音 API。
 
 ## 分镜怎么做的
 
@@ -165,6 +201,11 @@ MANJU_VIDEO_API_KEY=sk-...
 MANJU_VIDEO_API_BASE=https://your-api.example.com/v1
 MANJU_VIDEO_MODEL=your-model-name       # 可选
 MANJU_VIDEO_POLL_BASE=https://...       # 可选，查询生成进度的地址
+
+# 配音（可选，不配则使用免费方案）
+MANJU_VOICE_API_KEY=sk-...
+MANJU_VOICE_API_BASE=https://your-api.example.com/v1
+MANJU_VOICE_MODEL=your-model-name       # 可选
 ```
 
 ## 里面长什么样
@@ -179,7 +220,8 @@ manju/
 │   ├── voice.py        # 分镜 → 配音参数
 │   ├── video.py        # 分镜 → 视频提示词（中英双版）
 │   ├── generate_image.py   # 文字/图片 → AI图片
-│   └── generate_video.py   # 文字/图片 → AI视频
+│   ├── generate_video.py   # 文字/图片 → AI视频
+│   └── generate_voice.py   # 文字 → 语音
 └── utils/
     ├── ai.py           # LLM 调用
     ├── formats.py      # xlsx/docx/pdf 读写
