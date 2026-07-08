@@ -13,8 +13,8 @@ from manju.pipeline.storyboard import run_storyboard
 from manju.pipeline.video import run_video
 from manju.pipeline.voice import run_voice
 from manju.pipeline.generate_video import run_generate
-from manju.pipeline.generate_image import run_image
-from manju.pipeline.generate_voice import run_speak, run_batch_speak
+from manju.pipeline.generate_image import run_image, run_batch_from_file
+from manju.pipeline.generate_voice import run_speak, run_batch_speak, run_batch_speak_file
 from manju.utils.use_guide import write_use_guide
 
 OUTPUT_BASE = os.path.join(os.getcwd(), "manju-output")
@@ -131,7 +131,7 @@ def create(title, genre, premise, protagonist, conflict, world_rules,
 @click.option("--max-scenes", type=int, default=None,
               help="最多几场戏（默认按字数自动决定）")
 @click.option("--image-api/--no-image-api", default=False,
-              help="调用本地生图网关逐镜生图")
+              help="逐镜生图 (需配置生图API)")
 def storyboard(file, output_dir, max_scenes, image_api):
     """分镜生成：读取剧本JSON或小说 → LLM生成分镜 → 可选生图。
 
@@ -233,6 +233,10 @@ def generate(prompt, image, frames, fps, size, output_dir):
       MANJU_VIDEO_API_BASE=https://your-api.example.com/v1
     """
     try:
+        if not prompt or not prompt.strip():
+            click.echo("❌ 请提供视频内容描述", err=True)
+            sys.exit(1)
+
         result = run_generate(
             prompt, image_path=image,
             num_frames=frames, frame_rate=fps,
@@ -253,7 +257,7 @@ def generate(prompt, image, frames, fps, size, output_dir):
 # ── 图片生成 ──────────────────────────────────────────────────────────────────
 
 @cli.command()
-@click.argument("prompt")
+@click.argument("prompt", required=False, default=None)
 @click.option("-i", "--image", default="",
               help="参考图URL（img2img模式）")
 @click.option("--size", default="1024x1024",
@@ -262,10 +266,13 @@ def generate(prompt, image, frames, fps, size, output_dir):
               help="输出目录")
 @click.option("-n", "--name", default="",
               help="输出文件名（不含扩展名）")
-def image(prompt, image, size, output_dir, name):
+@click.option("--batch", "batch_file", type=click.Path(exists=True), default=None,
+              help="批量模式：从文件读取提示词（每行一条，跳过空行/#注释）")
+def image(prompt, image, size, output_dir, name, batch_file):
     """生成图片：文本描述 → AI图片（可选参考图）。
 
     PROMPT: 图片内容描述（中英文皆可）
+    使用 --batch 文件路径 切换批量模式。
 
     使用前需在 ~/.manju.env 中配置生图API：
       MANJU_IMAGE_API_KEY=your-key
@@ -273,6 +280,21 @@ def image(prompt, image, size, output_dir, name):
       MANJU_IMAGE_MODEL=your-model-name
     """
     try:
+        if batch_file:
+            # Batch mode: read prompts from file
+            count = run_batch_from_file(batch_file, output_dir=output_dir, size=size)
+            if count > 0:
+                click.echo(f"\n✅ 批量生图完成: {count} 张")
+            else:
+                click.echo("\n⚠ 批量生图失败", err=True)
+                sys.exit(1)
+            return
+
+        # Single prompt mode — validate input
+        if not prompt or not prompt.strip():
+            click.echo("❌ 请提供提示词描述，或使用 --batch 从文件批量生成", err=True)
+            sys.exit(1)
+
         result = run_image(
             prompt, image_path=image,
             size=size,
@@ -293,7 +315,7 @@ def image(prompt, image, size, output_dir, name):
 # ── 配音生成 ──────────────────────────────────────────────────────────────────
 
 @cli.command("speak")
-@click.argument("text")
+@click.argument("text", required=False, default=None)
 @click.option("-v", "--voice", default="xiaoxiao",
               help="音色 (xiaoxiao/yunxi/yunjian/yunyang/xiaoyi/yunxia)")
 @click.option("--speed", type=float, default=1.0,
@@ -306,7 +328,9 @@ def image(prompt, image, size, output_dir, name):
               help="输出目录")
 @click.option("-n", "--name", default="",
               help="输出文件名（不含扩展名）")
-def speak(text, voice, speed, pitch, volume, output_dir, name):
+@click.option("--batch", "batch_file", type=click.Path(exists=True), default=None,
+              help="批量模式：从文件读取文本行（每行一条，跳过空行/#注释）")
+def speak(text, voice, speed, pitch, volume, output_dir, name, batch_file):
     """文字转语音：文本 → MP3音频。
 
     零配置即可使用（需 pip install edge-tts）。
@@ -315,6 +339,21 @@ def speak(text, voice, speed, pitch, volume, output_dir, name):
       MANJU_VOICE_API_BASE=https://...
     """
     try:
+        if batch_file:
+            # Batch mode: read lines from file
+            count = run_batch_speak_file(batch_file, output_dir=output_dir)
+            if count > 0:
+                click.echo(f"\n✅ 批量配音完成: {count} 个音频")
+            else:
+                click.echo("\n⚠ 批量配音失败", err=True)
+                sys.exit(1)
+            return
+
+        # Single text mode — validate input
+        if not text or not text.strip():
+            click.echo("❌ 请提供要朗读的文本，或使用 --batch 从文件批量配音", err=True)
+            sys.exit(1)
+
         result = run_speak(
             text, voice=voice, speed=speed,
             pitch=pitch, volume=volume,
@@ -348,12 +387,14 @@ def speak(text, voice, speed, pitch, volume, output_dir, name):
               default=True, help="生成视频提示词")
 @click.option("--voice/--no-voice", "do_voice",
               default=True, help="生成配音脚本")
+@click.option("--speak/--no-speak", "do_speak",
+              default=False, help="生成配音音频文件（需先启用 --voice）")
 @click.option("--image-api/--no-image-api", default=False,
               help="生图")
 @click.option("--max-scenes", type=int, default=None,
               help="最多几场戏")
 def pipeline(script_path, novel, genre, output_dir, do_storyboard,
-             do_video, do_voice, image_api, max_scenes):
+             do_video, do_voice, do_speak, image_api, max_scenes):
     """一键全流程：剧本 → 分镜 → 配音 → 视频提示词。
 
     三种启动方式：
@@ -422,7 +463,12 @@ def pipeline(script_path, novel, genre, output_dir, do_storyboard,
         # ── Step 2: Voice ─────────────────────────────────────────────────
         if do_voice:
             click.echo(f"\n🎙 生成配音脚本...")
-            run_voice(storyboard_file, output_dir=out_dir)
+            voice_result = run_voice(storyboard_file, output_dir=out_dir)
+
+            if do_speak and voice_result is not None:
+                click.echo(f"\n🎙️  生成配音音频...")
+                n = run_batch_speak(voice_result, out_dir)
+                click.echo(f"   ✅ 配音完成: {n} 个音频")
 
         # ── Step 3: Video ─────────────────────────────────────────────────
         if do_video:

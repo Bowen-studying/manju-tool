@@ -1,6 +1,7 @@
 # ── Use guide ─────────────────────────────────────────────────────────────────
 
 import os
+import sys
 
 def write_use_guide(output_dir: str, files: dict, title: str = ""):
     """Generate a user guide PDF+DOCX — no product names, no ads."""
@@ -79,4 +80,4 @@ def write_use_guide(output_dir: str, files: dict, title: str = ""):
         HTML(string=html).write_pdf(pdf_path)
         print(f"   📕 使用指南.pdf → {pdf_path}")
     except Exception as e:
-        print(f"   ⚠ 使用指南: {e}")
+        print(f"   ⚠ 使用指南: {e}", file=sys.stderr)

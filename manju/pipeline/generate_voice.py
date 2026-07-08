@@ -14,11 +14,13 @@ When MANJU_VOICE_API_KEY is NOT set, falls back to edge-tts CLI
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
-import time
 import urllib.request
 from datetime import datetime
+
+from manju.utils.config import load_manju_env
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -35,18 +37,7 @@ def _get_voice_config() -> dict:
         "backend": "edge-tts",  # default
     }
 
-    env_keys = dict(os.environ)
-    env_file = os.path.join(os.path.expanduser("~"), ".manju.env")
-    try:
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, val = line.partition("=")
-                    if key.strip() not in env_keys:
-                        env_keys[key.strip()] = val.strip()
-    except Exception:
-        pass
+    env_keys = load_manju_env()
 
     for manju_key, config_key in [
         ("MANJU_VOICE_API_BASE", "api_base"),
@@ -80,11 +71,10 @@ DEFAULT_EDGE_VOICE = "zh-CN-XiaoxiaoNeural"
 
 def _find_edge_tts() -> str | None:
     """Find edge-tts executable. Returns path or None."""
-    import shutil
     path = shutil.which("edge-tts")
     if path:
         return path
-    # Try common venv locations
+    # Try common locations
     candidates = [
         os.path.expanduser("~/.local/bin/edge-tts"),
         "/usr/local/bin/edge-tts",
@@ -148,7 +138,7 @@ def _speak_edge_tts(
         return False
 
 
-# ── OpenAI-compatible Speech API backend ────────────────────────────────────────
+# ── API backend ────────────────────────────────────────────────────────────────
 
 def _speak_api(
     text: str,
@@ -157,7 +147,7 @@ def _speak_api(
     speed: float = 1.0,
     cfg: dict | None = None,
 ) -> bool:
-    """Generate speech via OpenAI-compatible /v1/audio/speech endpoint."""
+    """Generate speech via /v1/audio/speech endpoint."""
     if cfg is None:
         cfg = _get_voice_config()
 
@@ -185,12 +175,26 @@ def _speak_api(
         with urllib.request.urlopen(req, timeout=60) as resp:
             content = resp.read()
 
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
+
         with open(output_path, "wb") as f:
             f.write(content)
 
         size_kb = len(content) / 1024
         return size_kb > 0.5  # TTS output should be >500 bytes
+    except urllib.error.URLError as e:
+        print(f"   ⚠ 语音API网络错误: {e.reason}", file=sys.stderr)
+        return False
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        print(f"   ⚠ 语音API HTTP {e.code}: {body}", file=sys.stderr)
+        return False
     except Exception as e:
         print(f"   ⚠ 语音API失败: {e}", file=sys.stderr)
         return False
@@ -315,16 +319,88 @@ def run_batch_speak(
         if cfg["backend"] == "api":
             ok = _speak_api(text, output_path, voice="alloy", speed=speed, cfg=cfg)
         else:
-            rate_pct = int((speed - 1.0) * 100)
-            rate = f"{'+' if rate_pct >= 0 else ''}{rate_pct}%"
-            pitch_hz = (pitch - 5) * 4
-            pitch_str = f"{'+' if pitch_hz >= 0 else ''}{pitch_hz}Hz"
-            vol_pct = int((volume - 5) / 5 * 50)
-            vol_str = f"{'+' if vol_pct >= 0 else ''}{vol_pct}%"
             ok = _speak_edge_tts(text, output_path, voice=DEFAULT_EDGE_VOICE,
-                                 rate=f"{'+' if rate_pct >= 0 else ''}{rate_pct}%",
-                                 pitch=f"{'+' if pitch_hz >= 0 else ''}{pitch_hz}Hz",
-                                 volume=f"{'+' if vol_pct >= 0 else ''}{vol_pct}%")
+                                 rate=f"{'+' if int((speed - 1.0) * 100) >= 0 else ''}{int((speed - 1.0) * 100)}%",
+                                 pitch=f"{'+' if (pitch - 5) * 4 >= 0 else ''}{(pitch - 5) * 4}Hz",
+                                 volume=f"{'+' if int((volume - 5) / 5 * 50) >= 0 else ''}{int((volume - 5) / 5 * 50)}%")
+
+        if ok:
+            print("✅")
+            success += 1
+        else:
+            print("❌")
+
+    return success
+
+
+# ── Batch generation from file ─────────────────────────────────────────────────
+
+def run_batch_speak_file(
+    file_path: str,
+    output_dir: str | None = None,
+) -> int:
+    """Generate speech audio for lines read from a file (one per line).
+
+    Process all lines sequentially. Blank lines and #-comments are skipped.
+
+    Args:
+        file_path: Path to a text file with one line of text per line
+        output_dir: Directory to save MP3 files
+
+    Returns:
+        Number of successfully generated audio files.
+    """
+    if not os.path.isfile(file_path):
+        print(f"❌ 文件不存在: {file_path}", file=sys.stderr)
+        return 0
+
+    # Read and parse lines
+    lines = []
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                lines.append(stripped)
+    except Exception as e:
+        print(f"❌ 读取文件失败: {e}", file=sys.stderr)
+        return 0
+
+    if not lines:
+        print("❌ 文件中没有有效的文本行", file=sys.stderr)
+        return 0
+
+    cfg = _get_voice_config()
+
+    if output_dir is None:
+        now = datetime.now()
+        today = f"{now.year}.{now.month}.{now.day}"
+        output_dir = os.path.join(os.getcwd(), "manju-output", today, "voice")
+    os.makedirs(output_dir, exist_ok=True)
+
+    mode = "API" if cfg["backend"] == "api" else "edge-tts"
+    print(f"\n🎙️  批量配音：从文件读取 {len(lines)} 行")
+    print(f"   后端: {mode}")
+
+    success = 0
+    for i, text in enumerate(lines, start=1):
+        safe_name = re.sub(r'[\\/*?:"<>|]', '_', text[:30]).strip('_')
+        output_path = os.path.join(output_dir, f"{safe_name}.mp3")
+
+        print(f"   🎙️ [{i}/{len(lines)}] \"{text[:40]}{'...' if len(text)>40 else ''}\" ... ",
+              end="", flush=True)
+
+        if os.path.exists(output_path) and os.path.getsize(output_path) > 500:
+            print("⏭ (已存在)")
+            success += 1
+            continue
+
+        if cfg["backend"] == "api":
+            ok = _speak_api(text, output_path, voice="alloy", speed=1.0, cfg=cfg)
+        else:
+            ok = _speak_edge_tts(text, output_path, voice=DEFAULT_EDGE_VOICE,
+                                 rate="+0%", pitch="+0Hz", volume="+0%")
 
         if ok:
             print("✅")

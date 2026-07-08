@@ -1,7 +1,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/version-0.4.0-orange" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.5.0-orange" alt="Version">
 </p>
 
 # manju
@@ -52,6 +52,9 @@ manju pipeline --novel my_novel.txt
 # 生图
 manju image "极光下的雪山小屋，暖黄灯光从窗户透出"
 
+# 批量生图（文件每行一个提示词，首张做参考保持风格统一）
+manju image --batch prompts.txt
+
 # 生视频
 manju generate "雪夜中一匹白马缓缓走过森林，电影质感"
 
@@ -94,6 +97,12 @@ manju image "..." -n "scene_01"
 ```
 
 接入任意兼容 OpenAI Images API 的生图服务。
+
+```bash
+# 批量生图：文件每行一个提示词
+manju image --batch prompts.txt
+# 策略：第一张 txt2img 建立基准 → 其余并行 img2img 保持风格一致
+```
 
 ## 生视频
 
@@ -140,6 +149,11 @@ manju speak "晚安..." --speed 0.7 --pitch 3
 ```
 
 零配置即可使用。也可在 `~/.manju.env` 中接入自选语音 API。
+
+```bash
+# 批量配音：文件每行一段文字
+manju speak --batch lines.txt
+```
 
 ## 分镜怎么做的
 
@@ -221,9 +235,10 @@ manju/
 │   ├── video.py        # 分镜 → 视频提示词（中英双版）
 │   ├── generate_image.py   # 文字/图片 → AI图片
 │   ├── generate_video.py   # 文字/图片 → AI视频
-│   └── generate_voice.py   # 文字 → 语音
+│   ├── generate_voice.py   # 文字 → 语音
 └── utils/
     ├── ai.py           # LLM 调用
+    ├── config.py       # 统一配置加载
     ├── formats.py      # xlsx/docx/pdf 读写
     ├── http.py         # HTTP 工具
     └── use_guide.py    # 使用指南生成

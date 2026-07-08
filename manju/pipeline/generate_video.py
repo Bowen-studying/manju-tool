@@ -18,6 +18,8 @@ import time
 import urllib.request
 from datetime import datetime
 
+from manju.utils.config import load_manju_env
+
 DEFAULT_FRAMES = 121   # ~5s at 24fps
 DEFAULT_FPS = 24
 DEFAULT_SIZE = "768x512"
@@ -33,23 +35,11 @@ def _get_video_config() -> dict:
     config = {
         "api_base": "",
         "api_key": "",
-        "model": "agnes-video-v2.0",
+        "model": "",
         "poll_base": "",
     }
 
-    env_keys = dict(os.environ)
-
-    env_file = os.path.join(os.path.expanduser("~"), ".manju.env")
-    try:
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, val = line.partition("=")
-                    if key.strip() not in env_keys:
-                        env_keys[key.strip()] = val.strip()
-    except Exception:
-        pass
+    env_keys = load_manju_env()
 
     for manju_key, config_key in [
         ("MANJU_VIDEO_API_BASE", "api_base"),
@@ -61,13 +51,15 @@ def _get_video_config() -> dict:
         if val:
             config[config_key] = val
 
-    # Fallback: if no MANJU_VIDEO_API_KEY, try AGNES_API_KEY
+    # Fallback: if no MANJU_VIDEO_API_KEY but AGNES_API_KEY exists, use that
     if not config["api_key"]:
         agnes_key = env_keys.get("AGNES_API_KEY", "")
         if agnes_key:
             config["api_key"] = agnes_key
             if not config["api_base"]:
                 config["api_base"] = "https://apihub.agnes-ai.com/v1"
+            if not config["model"]:
+                config["model"] = "agnes-video-v2.0"
             if not config["poll_base"]:
                 config["poll_base"] = "https://apihub.agnes-ai.com/agnesapi"
 
@@ -146,7 +138,8 @@ def _create_video(
         mode = "txt2video"
 
     duration = num_frames / frame_rate
-    print(f"   🎥 {mode}: {num_frames}帧@{frame_rate}fps ≈ {duration:.1f}s, {size}")
+    model_info = f" | model={cfg['model']}" if cfg["model"] else ""
+    print(f"   🎥 {mode}: {num_frames}帧@{frame_rate}fps ≈ {duration:.1f}s, {size}{model_info}")
 
     try:
         req = urllib.request.Request(
@@ -159,6 +152,17 @@ def _create_video(
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        print(f"   ❌ 视频API网络错误: {e.reason}", file=sys.stderr)
+        return None
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        print(f"   ❌ 视频API HTTP {e.code}: {body}", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"   ❌ 提交失败: {e}", file=sys.stderr)
         return None
@@ -202,6 +206,10 @@ def _poll_video(video_id: str, cfg: dict | None = None, max_wait: int = 600) -> 
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
+        except urllib.error.URLError as e:
+            print(f"\n   ⚠ 查询网络错误: {e.reason}", file=sys.stderr)
+            time.sleep(interval)
+            continue
         except Exception as e:
             print(f"\n   ⚠ 查询异常: {e}", file=sys.stderr)
             time.sleep(interval)
@@ -239,12 +247,17 @@ def _download_video(url: str, output_path: str) -> bool:
         req = urllib.request.Request(url)
         with urllib.request.urlopen(req, timeout=300) as resp:
             content = resp.read()
-        os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+        output_dir = os.path.dirname(output_path)
+        if output_dir:
+            os.makedirs(output_dir, exist_ok=True)
         with open(output_path, "wb") as f:
             f.write(content)
         size_mb = len(content) / (1024 * 1024)
         print(f"   📥 下载完成: {output_path} ({size_mb:.1f}MB)")
         return True
+    except urllib.error.URLError as e:
+        print(f"   ❌ 下载网络错误: {e.reason}", file=sys.stderr)
+        return False
     except Exception as e:
         print(f"   ❌ 下载失败: {e}", file=sys.stderr)
         return False

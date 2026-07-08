@@ -11,6 +11,8 @@ import re
 import sys
 import urllib.request
 
+from manju.utils.config import load_manju_env
+
 
 # ── Cached AI config ───────────────────────────────────────────────────────────
 
@@ -20,6 +22,9 @@ _AI_CONFIG = None
 def get_ai_config():
     """Return (api_url, model, api_key) from environment or ~/.manju.env.
 
+    Priority: LLM_API_KEY > provider-specific keys (DEEPSEEK_API_KEY, GLM_API_KEY).
+    When using LLM_API_KEY, LLM_API_BASE and LLM_MODEL configure the endpoint.
+
     Results are cached after the first successful lookup.
     Returns (None, None, None) if no provider is configured.
     """
@@ -27,32 +32,35 @@ def get_ai_config():
     if _AI_CONFIG is not None:
         return _AI_CONFIG
 
-    env_file = os.path.join(os.path.expanduser("~"), ".manju.env")
+    env_keys = load_manju_env()
+
+    # Priority 1: Generic LLM_API_KEY (takes priority over all provider-specific keys)
+    generic_key = env_keys.get("LLM_API_KEY", "")
+    if generic_key:
+        generic_base = env_keys.get("LLM_API_BASE", "")
+        generic_model = env_keys.get("LLM_MODEL", "")
+        if generic_base and generic_model:
+            _AI_CONFIG = (generic_base, generic_model, generic_key)
+            return _AI_CONFIG
+        # If LLM_API_KEY is set but base/model are missing, warn and fall through
+        if not generic_base:
+            print("   ⚠ LLM_API_KEY 已设置但 LLM_API_BASE 未配置", file=sys.stderr)
+        if not generic_model:
+            print("   ⚠ LLM_API_KEY 已设置但 LLM_MODEL 未配置", file=sys.stderr)
+
+    # Priority 2: Provider-specific keys (backward compatibility)
     providers = [
         ("deepseek", "https://api.deepseek.com/v1/chat/completions",
          "deepseek-chat", "DEEPSEEK_API_KEY"),
         ("glm", "https://open.bigmodel.cn/api/paas/v4/chat/completions",
          "glm-4.5-air", "GLM_API_KEY"),
     ]
-    env_keys = {}
-    try:
-        with open(env_file) as f:
-            for line in f:
-                for _, _, _, key_env in providers:
-                    if line.startswith(f"{key_env}="):
-                        env_keys[key_env] = line.split("=", 1)[1].strip()
-    except Exception:
-        pass
-    for _, _, _, key_env in providers:
-        if key_env not in env_keys:
-            v = os.environ.get(key_env, "")
-            if v:
-                env_keys[key_env] = v
-    for _, url, model, key_env in providers:
+    for _name, url, model, key_env in providers:
         key = env_keys.get(key_env, "")
         if key:
             _AI_CONFIG = (url, model, key)
             return _AI_CONFIG
+
     _AI_CONFIG = (None, None, None)
     return _AI_CONFIG
 
@@ -64,12 +72,17 @@ def call_llm(system_prompt: str, user_content: str,
     """Generic LLM call via urllib. Returns response text or None on failure."""
     api_url, model, api_key = get_ai_config()
     if not api_key or not api_url:
-        print("   ⚠ No AI provider configured "
-              "(set DEEPSEEK_API_KEY or GLM_API_KEY)", file=sys.stderr)
+        print("   ⚠ 未配置LLM API "
+              "(设置 LLM_API_KEY + LLM_API_BASE + LLM_MODEL, "
+              "或 DEEPSEEK_API_KEY, 或 GLM_API_KEY)", file=sys.stderr)
+        return None
+
+    if not model:
+        print("   ⚠ LLM model 未配置 (设置 LLM_MODEL)", file=sys.stderr)
         return None
 
     payload = json.dumps({
-        "model": model or "",
+        "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -86,8 +99,19 @@ def call_llm(system_prompt: str, user_content: str,
         with urllib.request.urlopen(req, timeout=300) as resp:
             result = json.loads(resp.read().decode())
             return result["choices"][0]["message"]["content"]
+    except urllib.error.URLError as e:
+        print(f"   ⚠ LLM 网络错误: {e.reason}", file=sys.stderr)
+        return None
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        print(f"   ⚠ LLM HTTP {e.code}: {body}", file=sys.stderr)
+        return None
     except Exception as e:
-        print(f"   ⚠ LLM call failed: {e}", file=sys.stderr)
+        print(f"   ⚠ LLM 调用失败: {e}", file=sys.stderr)
         return None
 
 
@@ -123,5 +147,5 @@ def parse_json_response(response_text: str) -> dict | None:
             except json.JSONDecodeError:
                 pass
 
-    print("   ⚠ Failed to parse LLM response as JSON", file=sys.stderr)
+    print("   ⚠ 无法解析LLM响应为JSON", file=sys.stderr)
     return None

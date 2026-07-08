@@ -4,7 +4,7 @@ Supports any OpenAI-compatible Images API endpoint.
 Configure in ~/.manju.env:
   MANJU_IMAGE_API_KEY=sk-...        (required)
   MANJU_IMAGE_API_BASE=https://...   (required)
-  MANJU_IMAGE_MODEL=model-name       (optional, default depends on endpoint)
+  MANJU_IMAGE_MODEL=model-name       (optional)
 
 Or set environment variables with the same names.
 """
@@ -17,6 +17,8 @@ import time
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+
+from manju.utils.config import load_manju_env
 
 DEFAULT_SIZE = "1024x1024"
 
@@ -32,23 +34,10 @@ def _get_image_config() -> dict:
     config = {
         "api_base": "",
         "api_key": "",
-        "model": "agnes-image-2.1-flash",
+        "model": "",
     }
 
-    # Collect env keys from both os.environ and ~/.manju.env
-    env_keys = dict(os.environ)
-
-    env_file = os.path.join(os.path.expanduser("~"), ".manju.env")
-    try:
-        with open(env_file) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith("#") and "=" in line:
-                    key, _, val = line.partition("=")
-                    if key.strip() not in env_keys:
-                        env_keys[key.strip()] = val.strip()
-    except Exception:
-        pass
+    env_keys = load_manju_env()
 
     # Read image-specific config
     for manju_key, config_key in [
@@ -65,9 +54,10 @@ def _get_image_config() -> dict:
         agnes_key = env_keys.get("AGNES_API_KEY", "")
         if agnes_key:
             config["api_key"] = agnes_key
-            # Also set default base if not configured
             if not config["api_base"]:
                 config["api_base"] = "https://apihub.agnes-ai.com/v1"
+            if not config["model"]:
+                config["model"] = "agnes-image-2.1-flash"
 
     return config
 
@@ -125,6 +115,17 @@ def _generate_txt2img(
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        print(f"   ❌ 生图网络错误: {e.reason}", file=sys.stderr)
+        return None
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        print(f"   ❌ 生图API HTTP {e.code}: {body}", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"   ❌ 生图请求失败: {e}", file=sys.stderr)
         return None
@@ -184,6 +185,17 @@ def _generate_img2img(
         )
         with urllib.request.urlopen(req, timeout=120) as resp:
             result = json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        print(f"   ❌ 图生图网络错误: {e.reason}", file=sys.stderr)
+        return None
+    except urllib.error.HTTPError as e:
+        body = ""
+        try:
+            body = e.read().decode()[:200]
+        except Exception:
+            pass
+        print(f"   ❌ 图生图API HTTP {e.code}: {body}", file=sys.stderr)
+        return None
     except Exception as e:
         print(f"   ❌ 图生图请求失败: {e}", file=sys.stderr)
         return None
@@ -211,7 +223,9 @@ def _generate_img2img(
 
 def _download_image(url: str, output_path: str, max_retries: int = 3) -> bool:
     """Download image from URL to local path with retries."""
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    output_dir = os.path.dirname(output_path)
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
 
     # Skip if already exists and has reasonable size
     if os.path.exists(output_path) and os.path.getsize(output_path) >= 10240:
@@ -229,6 +243,13 @@ def _download_image(url: str, output_path: str, max_retries: int = 3) -> bool:
             size_kb = len(content) / 1024
             print(f"   ✅ 已保存: {output_path} ({size_kb:.0f}KB)")
             return True
+        except urllib.error.URLError as e:
+            if attempt < max_retries - 1:
+                wait = 2 ** attempt
+                print(f"   ⚠ 下载重试 {attempt+1}/{max_retries} ({wait}s): {e.reason}", file=sys.stderr)
+                time.sleep(wait)
+            else:
+                print(f"   ❌ 下载失败: {e.reason}", file=sys.stderr)
         except Exception as e:
             if attempt < max_retries - 1:
                 wait = 2 ** attempt
@@ -291,7 +312,8 @@ def run_image(
         mode = "txt2img"
 
     size = _validate_size(size)
-    print(f"   🎨 {mode}: {size} | model={cfg['model']}")
+    model_info = f" | model={cfg['model']}" if cfg["model"] else ""
+    print(f"   🎨 {mode}: {size}{model_info}")
     preview = prompt[:100] + ("..." if len(prompt) > 100 else "")
     print(f"   📝 {preview}")
 
@@ -352,8 +374,9 @@ def run_batch_images(
         print("   ⚠ 无生图提示词")
         return 0
 
+    model_info = f" | 模型: {cfg['model']}" if cfg["model"] else ""
     print(f"\n🖼️  开始生图：共 {len(prompts)} 个镜头")
-    print(f"   模型: {cfg['model']} | 尺寸: {size}")
+    print(f"   尺寸: {size}{model_info}")
     print(f"   策略: 第1张 txt2img → 其余并行 img2img")
 
     success_count = 0
@@ -406,5 +429,119 @@ def run_batch_images(
             except Exception as e:
                 shot = futures[future]
                 print(f"   📸 镜头 {shot['shot_id']} ❌ ({e})")
+
+    return success_count
+
+
+# ── Batch generation from file ─────────────────────────────────────────────────
+
+def run_batch_from_file(
+    file_path: str,
+    output_dir: str | None = None,
+    size: str = DEFAULT_SIZE,
+) -> int:
+    """Generate images for prompts read from a file (one per line).
+
+    Strategy:
+      1. First prompt → txt2img as reference
+      2. Remaining prompts → parallel img2img using the first as reference
+
+    File format: one prompt per line, blank lines and #-comments are skipped.
+
+    Args:
+        file_path: Path to a text file with one prompt per line
+        output_dir: Directory to save images
+        size: Image resolution
+
+    Returns:
+        Number of successfully generated images.
+    """
+    if not os.path.isfile(file_path):
+        print(f"❌ 文件不存在: {file_path}", file=sys.stderr)
+        return 0
+
+    # Read and parse prompts
+    prompts = []
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#"):
+                    continue
+                prompts.append(stripped)
+    except Exception as e:
+        print(f"❌ 读取文件失败: {e}", file=sys.stderr)
+        return 0
+
+    if not prompts:
+        print("❌ 文件中没有有效的提示词", file=sys.stderr)
+        return 0
+
+    cfg = _get_image_config()
+    if not cfg["api_key"]:
+        print("   ⚠ 生图API未配置，跳过", file=sys.stderr)
+        return 0
+
+    if output_dir is None:
+        now = datetime.now()
+        today = f"{now.year}.{now.month}.{now.day}"
+        output_dir = os.path.join(os.getcwd(), "manju-output", today, "images")
+    os.makedirs(output_dir, exist_ok=True)
+
+    size = _validate_size(size)
+
+    model_info = f" | 模型: {cfg['model']}" if cfg["model"] else ""
+    print(f"\n🖼️  批量生图：从文件读取 {len(prompts)} 条提示词")
+    print(f"   尺寸: {size}{model_info}")
+    print(f"   策略: 第1张 txt2img → 其余并行 img2img")
+
+    success_count = 0
+
+    # Step 1: First prompt — txt2img as reference
+    first_prompt = prompts[0]
+    first_name = re.sub(r'[\\/*?:"<>|]', '_', first_prompt[:40]).strip('_')
+    first_path = os.path.join(output_dir, f"{first_name}.png")
+
+    print(f"   📸 [1/{len(prompts)}] txt2img ... ", end="", flush=True)
+    ref_url = _generate_txt2img(first_prompt, size, cfg["model"], cfg["api_base"], cfg["api_key"])
+    if ref_url and _download_image(ref_url, first_path):
+        success_count += 1
+        print()
+    else:
+        print("❌ 参考图失败，中止")
+        return 0
+
+    if len(prompts) <= 1:
+        return success_count
+
+    # Step 2: Remaining prompts — parallel img2img
+    remaining = prompts[1:]
+    print(f"   🎞️  剩余 {len(remaining)} 条 — 并行 img2img")
+
+    def _worker(i_prompt):
+        idx, prompt = i_prompt
+        safe_name = re.sub(r'[\\/*?:"<>|]', '_', prompt[:40]).strip('_')
+        path = os.path.join(output_dir, f"{safe_name}.png")
+        if os.path.exists(path) and os.path.getsize(path) >= 10240:
+            return idx, True, "skip"
+        url = _generate_img2img(prompt, ref_url, size, cfg["model"], cfg["api_base"], cfg["api_key"])
+        if url and _download_image(url, path):
+            return idx, True, "ok"
+        return idx, False, "failed"
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = {executor.submit(_worker, (i, p)): (i, p)
+                   for i, p in enumerate(remaining, start=2)}
+        for future in as_completed(futures):
+            try:
+                idx, ok, reason = future.result()
+                if ok:
+                    print(f"   📸 [{idx}/{len(prompts)}] ✅ ({reason})")
+                    success_count += 1
+                else:
+                    print(f"   📸 [{idx}/{len(prompts)}] ❌")
+            except Exception as e:
+                i, _ = futures[future]
+                print(f"   📸 [{i}/{len(prompts)}] ❌ ({e})")
 
     return success_count

@@ -10,6 +10,7 @@ import sys
 from datetime import datetime
 
 from manju.utils.ai import call_llm, parse_json_response
+from manju.utils.config import count_chinese
 
 
 # ── Script extraction prompt ────────────────────────────────────────────────────
@@ -57,13 +58,6 @@ def _build_adapt_prompt(novel_text: str, title: str, genre: str = "") -> tuple[s
     return system_prompt, user_prompt
 
 
-# ── Count Chinese characters ────────────────────────────────────────────────────
-
-def _count_chinese(text: str) -> int:
-    """Count Chinese characters in text."""
-    return sum(1 for c in text if '一' <= c <= '鿿')
-
-
 # ── Main entry point ────────────────────────────────────────────────────────────
 
 def run_adapt(
@@ -91,8 +85,12 @@ def run_adapt(
         print(f"❌ 读取小说文件失败: {e}", file=sys.stderr)
         return None
 
+    if not novel_text or not novel_text.strip():
+        print("❌ 小说文件内容为空", file=sys.stderr)
+        return None
+
     title = os.path.splitext(os.path.basename(file_path))[0]
-    word_count = _count_chinese(novel_text)
+    word_count = count_chinese(novel_text)
 
     # ── Determine output directory ──────────────────────────────────────────
     if output_dir is None:

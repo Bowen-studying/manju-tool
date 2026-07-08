@@ -7,16 +7,12 @@ import sys
 from datetime import datetime
 
 from manju.utils.ai import call_llm, parse_json_response
+from manju.utils.config import count_chinese
 from manju.utils.formats import write_xlsx
 from manju.pipeline.generate_image import run_batch_images
 
 
 # ── Utility functions ───────────────────────────────────────────────────────────
-
-def _count_chinese(text: str) -> int:
-    """Count Chinese characters in text."""
-    return sum(1 for c in text if '一' <= c <= '鿿')
-
 
 def _extract_title(file_path: str) -> str:
     """Extract a clean title from filename, stripping known suffixes."""
@@ -366,20 +362,13 @@ def run_storyboard(
     # ── Read input ────────────────────────────────────────────────────────────
     try:
         if file_path.endswith(".docx"):
-            import zipfile
-            import xml.etree.ElementTree as ET
-            with zipfile.ZipFile(file_path) as z:
-                doc_xml = z.read("word/document.xml")
-            root = ET.fromstring(doc_xml)
-            paragraphs = []
-            for p in root.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}p"):
-                texts = []
-                for t in p.iter("{http://schemas.openxmlformats.org/wordprocessingml/2006/main}t"):
-                    if t.text:
-                        texts.append(t.text)
-                if texts:
-                    paragraphs.append("".join(texts))
-            raw_text = "\n".join(paragraphs)
+            from manju.utils.formats import read_input
+            raw_text = read_input(file_path)
+            if raw_text is None:
+                print("❌ 无法读取docx文件", file=sys.stderr)
+                return None
+            if isinstance(raw_text, dict):
+                raw_text = json.dumps(raw_text, ensure_ascii=False)
         else:
             with open(file_path, "r", encoding="utf-8") as f:
                 raw_text = f.read()
@@ -392,7 +381,7 @@ def run_storyboard(
         return None
 
     title = _extract_title(file_path)
-    word_count = _count_chinese(raw_text)
+    word_count = count_chinese(raw_text)
 
     # ── Determine scene count ─────────────────────────────────────────────────
     if max_scenes is None:
@@ -416,7 +405,7 @@ def run_storyboard(
     cleaned = _clean_text(raw_text)
 
     # ── Call LLM for storyboard ───────────────────────────────────────────────
-    print(f"\n🎬 生成分镜脚本中... (this may take 30-120s)")
+    print(f"\n🎬 生成分镜脚本中... (约需 30-120 秒)")
     sys.stdout.flush()
 
     system_prompt, user_prompt = _build_storyboard_prompt(cleaned, title, word_count, max_scenes)

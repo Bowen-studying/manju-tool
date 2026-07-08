@@ -4,9 +4,8 @@ import json
 import os
 import re
 import sys
-import urllib.request
 
-from manju.utils.ai import get_ai_config
+from manju.utils.ai import call_llm
 
 
 # ── Emotion → parameter mapping ────────────────────────────────────────────────
@@ -41,62 +40,41 @@ def _batch_infer_emotions(dialogue_lines: list[dict]) -> dict[int, str]:
         return {}
 
     # ── Try LLM first ──────────────────────────────────────────────────────
-    url, model, key = get_ai_config()
-    if url and key:
-        lines_text = ""
-        for item in dialogue_lines:
-            visual = item.get("visual_desc", "")
-            if not isinstance(visual, str):
-                visual = ""
-            lines_text += (
-                f"[{item['idx']}] 角色={item['character']}, "
-                f"台词=\"{item['dialogue']}\", "
-                f"画面=\"{visual[:80]}\", "
-                f"场景氛围=\"{item['mood']}\"\n"
-            )
-
-        system_prompt = (
-            "你是一个漫剧配音导演。为每句对白选择最准确的情绪标签。\n"
-            "可选标签：平静, 悲伤, 愤怒, 兴奋, 恐惧, 冷漠, 威胁, 温柔, 焦急, 内心独白\n\n"
-            "关键规则：\n"
-            "1. 讽刺、反语、冷笑 → 选「冷漠」，不要因为\"！\"选愤怒\n"
-            "2. 威胁、警告 → 选「威胁」\n"
-            "3. 表面平静但暗藏情绪 → 选实际情绪，不选「平静」\n"
-            "4. 漫剧需要外放情绪，优先判断真实情感而非字面\n\n"
-            "输出格式：每行 [序号] 情绪标签\n"
-            "示例：\n[1] 冷漠\n[2] 愤怒\n[3] 威胁"
+    lines_text = ""
+    for item in dialogue_lines:
+        visual = item.get("visual_desc", "")
+        if not isinstance(visual, str):
+            visual = ""
+        lines_text += (
+            f"[{item['idx']}] 角色={item['character']}, "
+            f"台词=\"{item['dialogue']}\", "
+            f"画面=\"{visual[:80]}\", "
+            f"场景氛围=\"{item['mood']}\"\n"
         )
 
-        payload = json.dumps({
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": lines_text},
-            ],
-            "temperature": 0.1,
-            "max_tokens": 500,
-        }).encode()
+    system_prompt = (
+        "你是一个漫剧配音导演。为每句对白选择最准确的情绪标签。\n"
+        "可选标签：平静, 悲伤, 愤怒, 兴奋, 恐惧, 冷漠, 威胁, 温柔, 焦急, 内心独白\n\n"
+        "关键规则：\n"
+        "1. 讽刺、反语、冷笑 → 选「冷漠」，不要因为\"！\"选愤怒\n"
+        "2. 威胁、警告 → 选「威胁」\n"
+        "3. 表面平静但暗藏情绪 → 选实际情绪，不选「平静」\n"
+        "4. 漫剧需要外放情绪，优先判断真实情感而非字面\n\n"
+        "输出格式：每行 [序号] 情绪标签\n"
+        "示例：\n[1] 冷漠\n[2] 愤怒\n[3] 威胁"
+    )
 
-        try:
-            req = urllib.request.Request(url, data=payload, headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            })
-            with urllib.request.urlopen(req, timeout=60) as resp:
-                result = json.loads(resp.read().decode())
-                llm_text = result["choices"][0]["message"]["content"]
-
-            emotions = {}
-            pattern = re.findall(r"\[(\d+)\]\s*(\S+)", llm_text)
-            for idx_str, emo in pattern:
-                idx = int(idx_str)
-                if emo in EMOTION_PARAM_MAP:
-                    emotions[idx] = emo
-            if emotions:
-                print(f"   🤖 LLM情绪分类: {len(emotions)}/{len(dialogue_lines)} 句")
-                return emotions
-        except Exception as e:
-            print(f"   ⚠️ LLM情绪分类失败，回退关键词: {e}", file=sys.stderr)
+    response = call_llm(system_prompt, lines_text, max_tokens=500, temperature=0.1)
+    if response:
+        emotions = {}
+        pattern = re.findall(r"\[(\d+)\]\s*(\S+)", response)
+        for idx_str, emo in pattern:
+            idx = int(idx_str)
+            if emo in EMOTION_PARAM_MAP:
+                emotions[idx] = emo
+        if emotions:
+            print(f"   🤖 LLM情绪分类: {len(emotions)}/{len(dialogue_lines)} 句")
+            return emotions
 
     # ── Keyword fallback ───────────────────────────────────────────────────
     print(f"   ⚡ 使用关键词情绪推断（LLM不可用）")
