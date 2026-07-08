@@ -1,14 +1,14 @@
 <p align="center">
   <img src="https://img.shields.io/badge/python-3.10+-blue" alt="Python">
   <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/version-0.2.0-orange" alt="Version">
+  <img src="https://img.shields.io/badge/version-0.3.0-orange" alt="Version">
 </p>
 
 # manju
 
 从文字到 AI 漫剧，一条命令。
 
-两种方式拿到剧本，然后自动生成分镜、配音脚本和视频提示词。小说改编也行，从零创作也行。
+两种方式拿到剧本，然后自动生成分镜、配音脚本、视频提示词。小说改编也行，从零创作也行。还能直接生图和生视频。
 
 ## 两行跑起来
 
@@ -16,11 +16,22 @@
 pip install git+https://github.com/Bowen-studying/manju-tool.git
 ```
 
-配置 API key：
+配置：
 
 ```bash
-export DEEPSEEK_API_KEY="your-key-here"
+# LLM（剧本/分镜/配音，必填）
+export LLM_API_KEY="your-key"
+export LLM_API_BASE="https://your-api.example.com/v1"
+export LLM_MODEL="your-model-name"
+
+# 生图和生视频（可选，需要时才配）
+export MANJU_IMAGE_API_KEY="your-key"
+export MANJU_IMAGE_API_BASE="https://your-api.example.com/v1"
+export MANJU_VIDEO_API_KEY="your-key"
+export MANJU_VIDEO_API_BASE="https://your-api.example.com/v1"
 ```
+
+或者写入 `~/.manju.env`，以后不用每次 export。
 
 然后：
 
@@ -31,8 +42,14 @@ manju adapt my_novel.txt
 # 从零创作
 manju create
 
-# 一条命令跑完全程
+# 一条命令跑完全程（剧本+分镜+配音+视频提示词）
 manju pipeline --novel my_novel.txt
+
+# 生图
+manju image "极光下的雪山小屋，暖黄灯光从窗户透出"
+
+# 生视频
+manju generate "雪夜中一匹白马缓缓走过森林，电影质感"
 ```
 
 ## 它做什么
@@ -43,51 +60,50 @@ manju pipeline --novel my_novel.txt
 | 分镜 | `storyboard` | 剧本 | xlsx 分镜表 |
 | 配音 | `voice` | 分镜 | pdf 配音脚本 |
 | 视频提示词 | `video` | 分镜 | pdf 中英双版视频提示词 |
+| 生图 | `image` | 文字描述 | png 图片 |
+| 生视频 | `generate` | 文字/文字+图片 | mp4 视频 |
 | 全部 | `pipeline` | 任意起点 | 以上全部 + 使用指南 pdf |
 
 每一步可以单独用。`pipeline` 末尾自动生成使用指南，告诉你怎么把输出用到后续制作里。
 
-## 两种方式拿到剧本
+## 生图
 
-### 从小说改：`adapt`
-
-有小说 txt，LLM 读出角色、划分场景、标记对白，输出结构化剧本。
+直接从文字出图，支持图生图保持风格统一。
 
 ```bash
-manju adapt my_novel.txt -g "古风宫斗"
+# 文生图
+manju image "一位古风女子站在樱花树下，衣袂飘飘，柔光"
+
+# 图生图（给一张参考图，保持风格一致）
+manju image "同一角色，转身回眸" -i "https://example.com/ref.png"
+
+# 指定尺寸
+manju image "..." --size 1024x768
+
+# 指定文件名
+manju image "..." -n "scene_01"
 ```
 
-### 从零创作：`create`
+接入任意兼容 OpenAI Images API 的生图服务。
 
-只有一个想法。交互模式一步步问：类型 → 梗概 → 主角 → 冲突。问完自动写剧本。
+## 生视频
 
-```bash
-manju create
-# 跟着提示走
-
-# 也可以命令行一把梭
-manju create --title "末世咖啡店" --genre "末日" \
-  --premise "丧尸末日中，一家咖啡店的香气成了最后的安全区" \
-  --protagonist "林小满, 25岁, 咖啡师, 脸上有一道疤痕" \
-  --conflict "想保住咖啡店却被武装势力盯上"
-```
-
-## 直接生视频
-
-不经过分镜/配音流程，`generate` 从文字或文字+图片出 AI 视频。
+不经过分镜流程，直接从文字或者文字+图片出 AI 视频。
 
 ```bash
-# 文字描述
-manju generate "a warrior riding a horse through a snowy forest, cinematic"
+# 文字生视频
+manju generate "a warrior riding through a snowy forest, cinematic"
 
-# 参考图片 + 文字
+# 图生视频（参考图片 + 文字描述）
 manju generate "人物缓缓抬头，眼神从迷茫变为坚定" -i "https://example.com/ref.jpg"
 
 # 控制时长和尺寸
-manju generate "...description..." --frames 241 --fps 24 --size 1024x576
+manju generate "..." --frames 241 --fps 24 --size 1024x576
 ```
 
-参数：`--frames`（8n+1，≤441），`--fps`（1-60），`--size`（64的倍数）。
+参数：`--frames`（默认 121≈5 秒），`--fps`（默认 24），`--size`（默认 768x512）。
+
+接入任意兼容的视频生成 API 即可使用。
 
 ## 分镜怎么做的
 
@@ -125,28 +141,53 @@ LLM 整批分析所有对白，能分辨"这个'！'是愤怒还是冷笑"。
 | storyboard | `.xlsx` | 分镜表 |
 | voice | `.pdf` | 配音脚本 |
 | video | `.pdf` | 视频提示词 |
+| image | `.png` | 生成的图片 |
+| generate | `.mp4` | 生成的视频 |
 | pipeline | `.pdf` | 使用指南 |
+
+## 配置
+
+所有 API 配置项，写入 `~/.manju.env` 或设为环境变量：
+
+```bash
+# LLM（剧本/分镜/配音，必填其一）
+LLM_API_KEY=sk-...
+LLM_API_BASE=https://your-api.example.com/v1
+LLM_MODEL=your-model-name
+
+# 生图（可选）
+MANJU_IMAGE_API_KEY=sk-...
+MANJU_IMAGE_API_BASE=https://your-api.example.com/v1
+MANJU_IMAGE_MODEL=your-model-name       # 可选
+
+# 生视频（可选）
+MANJU_VIDEO_API_KEY=sk-...
+MANJU_VIDEO_API_BASE=https://your-api.example.com/v1
+MANJU_VIDEO_MODEL=your-model-name       # 可选
+MANJU_VIDEO_POLL_BASE=https://...       # 可选，查询生成进度的地址
+```
 
 ## 里面长什么样
 
 ```
 manju/
-├── cli.py              # Click 入口，7 个命令
+├── cli.py              # 入口，8 个命令
 ├── pipeline/
 │   ├── adapt.py        # 小说 → 剧本
 │   ├── create.py       # 想法 → 剧本
 │   ├── storyboard.py   # 剧本 → 分镜（支持 --image-api 逐镜生图）
 │   ├── voice.py        # 分镜 → 配音参数
 │   ├── video.py        # 分镜 → 视频提示词（中英双版）
-│   └── generate_video.py  # 文字/图片 → AI视频
+│   ├── generate_image.py   # 文字/图片 → AI图片
+│   └── generate_video.py   # 文字/图片 → AI视频
 └── utils/
-    ├── ai.py           # LLM 调用封装
-    ├── formats.py      # xlsx/docx/pdf 多格式读写
+    ├── ai.py           # LLM 调用
+    ├── formats.py      # xlsx/docx/pdf 读写
     ├── http.py         # HTTP 工具
     └── use_guide.py    # 使用指南生成
 ```
 
-依赖：Python 3.10+, click, openpyxl, python-docx, weasyprint。LLM 适配 DeepSeek / GLM。
+依赖：Python 3.10+, click, openpyxl, python-docx, weasyprint。LLM 接入任意 OpenAI 兼容 API。
 
 ## License
 

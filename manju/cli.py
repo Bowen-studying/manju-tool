@@ -13,6 +13,7 @@ from manju.pipeline.storyboard import run_storyboard
 from manju.pipeline.video import run_video
 from manju.pipeline.voice import run_voice
 from manju.pipeline.generate_video import run_generate
+from manju.pipeline.generate_image import run_image
 from manju.utils.use_guide import write_use_guide
 
 OUTPUT_BASE = os.path.join(os.getcwd(), "manju-output")
@@ -211,14 +212,17 @@ def voice(storyboard_json, output_dir):
 @click.option("--fps", type=int, default=24,
               help="帧率 (默认24)")
 @click.option("--size", default="768x512",
-              help="分辨率 (默认768x512, 须为64的倍数)")
+              help="分辨率 (默认768x512)")
 @click.option("-o", "--output-dir", default=None,
               help="输出目录")
 def generate(prompt, image, frames, fps, size, output_dir):
     """生成视频：文本描述 → AI视频（可选参考图）。
 
     PROMPT: 视频内容描述（中文或英文皆可）
-    需要环境变量 AGNES_API_KEY。
+
+    使用前需在 ~/.manju.env 中配置视频API：
+      MANJU_VIDEO_API_KEY=your-key
+      MANJU_VIDEO_API_BASE=https://your-api.example.com/v1
     """
     try:
         result = run_generate(
@@ -230,6 +234,46 @@ def generate(prompt, image, frames, fps, size, output_dir):
             click.echo(f"\n✅ 视频已保存: {result}")
         else:
             click.echo("\n⚠ 视频生成未完成（可稍后重试）", err=True)
+    except KeyboardInterrupt:
+        click.echo("\n⚠ 用户中断")
+        sys.exit(1)
+    except Exception as e:
+        click.echo(f"\n❌ 出错: {e}", err=True)
+        sys.exit(1)
+
+
+# ── 图片生成 ──────────────────────────────────────────────────────────────────
+
+@cli.command()
+@click.argument("prompt")
+@click.option("-i", "--image", default="",
+              help="参考图URL（img2img模式）")
+@click.option("--size", default="1024x1024",
+              help="分辨率 (默认1024x1024)")
+@click.option("-o", "--output-dir", default=None,
+              help="输出目录")
+@click.option("-n", "--name", default="",
+              help="输出文件名（不含扩展名）")
+def image(prompt, image, size, output_dir, name):
+    """生成图片：文本描述 → AI图片（可选参考图）。
+
+    PROMPT: 图片内容描述（中英文皆可）
+
+    使用前需在 ~/.manju.env 中配置生图API：
+      MANJU_IMAGE_API_KEY=your-key
+      MANJU_IMAGE_API_BASE=https://your-api.example.com/v1
+      MANJU_IMAGE_MODEL=your-model-name
+    """
+    try:
+        result = run_image(
+            prompt, image_path=image,
+            size=size,
+            output_dir=output_dir, output_name=name,
+        )
+        if result:
+            click.echo(f"\n✅ 图片已保存: {result}")
+        else:
+            click.echo("\n⚠ 图片生成失败", err=True)
     except KeyboardInterrupt:
         click.echo("\n⚠ 用户中断")
         sys.exit(1)

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "manju-tool"
-version = "0.2.0"
+version = "0.3.0"
 description = "AI 漫剧制作 CLI — 从文字到分镜/配音/视频，一条命令"
 authors = [
     {name = "manju", email = "manju@example.com"},

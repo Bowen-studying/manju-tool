@@ -1,10 +1,13 @@
-"""manju generate — text/image-to-video via Agnes AI API.
+"""manju generate — text/image-to-video via configurable API.
 
-Supports:
-  - txt2video: text prompt → AI-generated video
-  - img2video: reference image + prompt → AI-generated video
+Supports video generation through any compatible API endpoint.
+Configure in ~/.manju.env:
+  MANJU_VIDEO_API_KEY=sk-...         (required)
+  MANJU_VIDEO_API_BASE=https://...    (required)
+  MANJU_VIDEO_MODEL=model-name        (optional)
+  MANJU_VIDEO_POLL_BASE=https://...   (optional, for async polling)
 
-Uses Agnes Video v2.0 (free tier, async polling).
+Or set environment variables with the same names.
 """
 
 import json
@@ -15,42 +18,72 @@ import time
 import urllib.request
 from datetime import datetime
 
-AGNES_BASE = "https://apihub.agnes-ai.com/v1"
-
-
-# ── Auth ──────────────────────────────────────────────────────────────────────
-
-def _get_agnes_key() -> str | None:
-    """Get Agnes API key from environment."""
-    key = os.environ.get("AGNES_API_KEY", "")
-    if key:
-        return key
-    env_file = os.path.join(os.path.expanduser("~"), ".manju.env")
-    try:
-        with open(env_file) as f:
-            for line in f:
-                if line.startswith("AGNES_API_KEY="):
-                    return line.split("=", 1)[1].strip()
-    except Exception:
-        pass
-    return None
-
-
-# ── Video constraints ─────────────────────────────────────────────────────────
-
-# num_frames must be ≤ 441 and satisfy 8n+1
 DEFAULT_FRAMES = 121   # ~5s at 24fps
 DEFAULT_FPS = 24
 DEFAULT_SIZE = "768x512"
 
-# Pre-compute valid frame range for validation
+
+# ── Config ─────────────────────────────────────────────────────────────────────
+
+def _get_video_config() -> dict:
+    """Read video API config from env or ~/.manju.env.
+
+    Returns dict with keys: api_base, api_key, model, poll_base.
+    """
+    config = {
+        "api_base": "",
+        "api_key": "",
+        "model": "agnes-video-v2.0",
+        "poll_base": "",
+    }
+
+    env_keys = dict(os.environ)
+
+    env_file = os.path.join(os.path.expanduser("~"), ".manju.env")
+    try:
+        with open(env_file) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, val = line.partition("=")
+                    if key.strip() not in env_keys:
+                        env_keys[key.strip()] = val.strip()
+    except Exception:
+        pass
+
+    for manju_key, config_key in [
+        ("MANJU_VIDEO_API_BASE", "api_base"),
+        ("MANJU_VIDEO_API_KEY", "api_key"),
+        ("MANJU_VIDEO_MODEL", "model"),
+        ("MANJU_VIDEO_POLL_BASE", "poll_base"),
+    ]:
+        val = env_keys.get(manju_key, "")
+        if val:
+            config[config_key] = val
+
+    # Fallback: if no MANJU_VIDEO_API_KEY, try AGNES_API_KEY
+    if not config["api_key"]:
+        agnes_key = env_keys.get("AGNES_API_KEY", "")
+        if agnes_key:
+            config["api_key"] = agnes_key
+            if not config["api_base"]:
+                config["api_base"] = "https://apihub.agnes-ai.com/v1"
+            if not config["poll_base"]:
+                config["poll_base"] = "https://apihub.agnes-ai.com/agnesapi"
+
+    return config
+
+
+# ── Validation ─────────────────────────────────────────────────────────────────
+
+# num_frames must be ≤ 441 and satisfy 8n+1
 _MIN_FRAMES = 25
 _MAX_FRAMES = 441
 
 
 def _nearest_frames(target: int) -> int:
     """Compute nearest valid frame count (8n+1, clamped to [25, 441])."""
-    n = max(3, (target - 1) // 8)  # n≥3 → frames≥25
+    n = max(3, (target - 1) // 8)
     lower = 8 * n + 1
     upper = min(8 * (n + 1) + 1, _MAX_FRAMES)
     if lower > _MAX_FRAMES:
@@ -61,7 +94,7 @@ def _nearest_frames(target: int) -> int:
 
 
 def _validate_size(size: str) -> str:
-    """Ensure size is valid (multiples of 64). Returns normalized size or raises."""
+    """Ensure size is valid (multiples of 64). Returns normalized size or default."""
     parts = size.lower().split("x")
     if len(parts) != 2:
         return DEFAULT_SIZE
@@ -82,26 +115,30 @@ def _create_video(
     num_frames: int = DEFAULT_FRAMES,
     frame_rate: int = DEFAULT_FPS,
     size: str = DEFAULT_SIZE,
-    api_key: str = "",
+    cfg: dict | None = None,
 ) -> dict | None:
-    """Submit a video generation task to Agnes. Returns response dict or None."""
-    key = api_key or _get_agnes_key()
-    if not key:
-        print("   ⚠ AGNES_API_KEY not set", file=sys.stderr)
+    """Submit a video generation task. Returns response dict or None."""
+    if cfg is None:
+        cfg = _get_video_config()
+
+    if not cfg["api_key"]:
+        print("   ⚠ 视频API密钥未配置 (设置 MANJU_VIDEO_API_KEY)", file=sys.stderr)
+        return None
+    if not cfg["api_base"]:
+        print("   ⚠ 视频API地址未配置 (设置 MANJU_VIDEO_API_BASE)", file=sys.stderr)
         return None
 
     num_frames = _nearest_frames(num_frames)
     size = _validate_size(size)
 
     payload = {
-        "model": "agnes-video-v2.0",
+        "model": cfg["model"],
         "prompt": prompt,
         "num_frames": num_frames,
         "frame_rate": frame_rate,
         "size": size,
     }
 
-    # Image-to-video: add image parameter
     if image_url:
         payload["image"] = image_url
         mode = "img2video"
@@ -113,34 +150,44 @@ def _create_video(
 
     try:
         req = urllib.request.Request(
-            f"{AGNES_BASE}/videos",
+            f"{cfg['api_base'].rstrip('/')}/videos",
             data=json.dumps(payload).encode(),
             headers={
-                "Authorization": f"Bearer {key}",
+                "Authorization": f"Bearer {cfg['api_key']}",
                 "Content-Type": "application/json",
             },
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
             result = json.loads(resp.read().decode())
     except Exception as e:
-        print(f"   ❌ Submission failed: {e}", file=sys.stderr)
+        print(f"   ❌ 提交失败: {e}", file=sys.stderr)
         return None
 
-    # Check for immediate error
     if "error" in result:
-        print(f"   ❌ API error: {result['error']}", file=sys.stderr)
+        err_msg = result["error"]
+        if isinstance(err_msg, dict):
+            err_msg = err_msg.get("message", str(err_msg))
+        print(f"   ❌ API错误: {err_msg}", file=sys.stderr)
         return None
 
     return result
 
 
-def _poll_video(video_id: str, api_key: str = "", max_wait: int = 600) -> str | None:
+def _poll_video(video_id: str, cfg: dict | None = None, max_wait: int = 600) -> str | None:
     """Poll for video completion. Returns download URL or None on timeout/failure."""
-    key = api_key or _get_agnes_key()
-    if not key:
+    if cfg is None:
+        cfg = _get_video_config()
+
+    if not cfg["api_key"]:
         return None
 
-    query_url = f"https://apihub.agnes-ai.com/agnesapi?video_id={video_id}"
+    # Build poll URL: use configured poll_base, or derive from api_base
+    poll_base = cfg.get("poll_base", "")
+    if poll_base:
+        query_url = f"{poll_base.rstrip('/')}?video_id={video_id}"
+    else:
+        query_url = f"{cfg['api_base'].rstrip('/')}/videos/{video_id}"
+
     start = time.time()
     interval = 5
 
@@ -151,26 +198,28 @@ def _poll_video(video_id: str, api_key: str = "", max_wait: int = 600) -> str | 
         try:
             req = urllib.request.Request(
                 query_url,
-                headers={"Authorization": f"Bearer {key}"},
+                headers={"Authorization": f"Bearer {cfg['api_key']}"},
             )
             with urllib.request.urlopen(req, timeout=10) as resp:
                 result = json.loads(resp.read().decode())
         except Exception as e:
-            print(f"\n   ⚠ Poll error: {e}", file=sys.stderr)
+            print(f"\n   ⚠ 查询异常: {e}", file=sys.stderr)
             time.sleep(interval)
             continue
 
         status = result.get("status", "")
         dots += 1
         if dots % 6 == 0:
-            print(f"   ... {status} ({int(time.time()-start)}s)")
+            elapsed = int(time.time() - start)
+            print(f"   ... {status} ({elapsed}s)")
 
         if status == "completed":
             url = result.get("url") or result.get("video_url") or ""
             if url:
-                print(f"\n   ✅ 生成完成 ({int(time.time()-start)}s)")
+                elapsed = int(time.time() - start)
+                print(f"\n   ✅ 生成完成 ({elapsed}s)")
                 return url
-            print(f"\n   ⚠ status=completed but no URL", file=sys.stderr)
+            print(f"\n   ⚠ 状态为completed但无URL", file=sys.stderr)
             return None
 
         if status == "failed":
@@ -210,61 +259,67 @@ def run_generate(
     frame_rate: int = DEFAULT_FPS,
     size: str = DEFAULT_SIZE,
     output_dir: str | None = None,
-    api_key: str = "",
 ) -> str | None:
     """Generate a video from text prompt (and optionally a reference image).
 
     Args:
         prompt: Text prompt describing the video content
-        image_path: Local image path for img2video mode (optional)
+        image_path: Image URL for img2video mode (optional)
         num_frames: Frame count (will be adjusted to nearest 8n+1)
         frame_rate: FPS
         size: Resolution like "768x512"
         output_dir: Output directory
-        api_key: Agnes API key (uses env if empty)
 
     Returns:
         Path to downloaded video file, or None on failure.
     """
+    cfg = _get_video_config()
+    if not cfg["api_key"]:
+        print("❌ 未配置视频API。请在 ~/.manju.env 中设置:", file=sys.stderr)
+        print("   MANJU_VIDEO_API_KEY=your-key", file=sys.stderr)
+        print("   MANJU_VIDEO_API_BASE=https://your-api.example.com/v1", file=sys.stderr)
+        print("   MANJU_VIDEO_MODEL=your-model-name", file=sys.stderr)
+        return None
+
     if output_dir is None:
         now = datetime.now()
         today = f"{now.year}.{now.month}.{now.day}"
         output_dir = os.path.join(os.getcwd(), "manju-output", today)
     os.makedirs(output_dir, exist_ok=True)
 
-    # Handle image URL
+    # Determine image URL
     image_url = ""
     if image_path:
         if image_path.startswith("http://") or image_path.startswith("https://"):
             image_url = image_path
         elif os.path.exists(image_path):
-            # For local files, we'd need to upload. For now, skip.
-            print("   ⚠ 本地图片需先上传到可访问URL，暂不支持直接传文件路径", file=sys.stderr)
+            print("   ⚠ 本地图片需公网URL，当前仅支持txt2video", file=sys.stderr)
             return None
         else:
             print(f"   ⚠ 图片路径无效: {image_path}", file=sys.stderr)
             return None
 
     # Step 1: Submit
-    result = _create_video(prompt, image_url, num_frames, frame_rate, size, api_key)
+    result = _create_video(prompt, image_url, num_frames, frame_rate, size, cfg)
     if not result:
         return None
 
-    # Extract video_id (Agnes uses 'task_id' in submit response, 'video_id' for query)
+    # Extract video_id from response
     video_id = result.get("video_id") or result.get("id") or result.get("task_id") or ""
     if not video_id:
-        print("   ⚠ No video_id in response", file=sys.stderr)
+        print("   ⚠ 响应中未找到 video_id", file=sys.stderr)
         print(f"   Response: {json.dumps(result, indent=2)[:500]}")
         return None
 
     # Step 2: Poll
-    url = _poll_video(video_id, api_key)
+    url = _poll_video(video_id, cfg)
     if not url:
         # Save video_id for manual recovery
         id_path = os.path.join(output_dir, "video_id.txt")
+        poll_base = cfg.get("poll_base", cfg["api_base"])
         with open(id_path, "w") as f:
-            f.write(f"video_id={video_id}\nquery_url=https://apihub.agnes-ai.com/agnesapi?video_id={video_id}\n")
-        print(f"   📝 video_id 已保存到 {id_path}")
+            f.write(f"video_id={video_id}\nquery_url={poll_base}?video_id={video_id}\n")
+        print(f"   📝 video_id 已保存: {id_path}")
         return None
 
     # Step 3: Download

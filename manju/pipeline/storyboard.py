@@ -4,12 +4,11 @@ import json
 import os
 import re
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 
 from manju.utils.ai import call_llm, parse_json_response
-from manju.utils.http import http_post_json
 from manju.utils.formats import write_xlsx
+from manju.pipeline.generate_image import run_batch_images
 
 
 # ── Utility functions ───────────────────────────────────────────────────────────
@@ -312,138 +311,35 @@ def _generate_markdown(storyboard: dict) -> str:
     return "\n".join(lines)
 
 
-# ── Image generation (optional) ─────────────────────────────────────────────────
+# ── Image generation (optional) ──────────────────────────────────────────────────
 
-def _generate_image_txt2img(prompt: str, api_base: str = "http://localhost:8787") -> str | None:
-    """Generate first image via txt2img. Returns base64 string or None."""
-    try:
-        result = http_post_json(
-            f"{api_base}/txt2img",
-            {"prompt": prompt, "negative_prompt": "lowres, bad anatomy, blurry"},
-            timeout=120,
-        )
-        if "images" in result and result["images"]:
-            return result["images"][0]
-        if "image" in result:
-            return result["image"]
-        return None
-    except Exception as e:
-        print(f"   ⚠️ txt2img failed: {e}", file=sys.stderr)
-        return None
+def _generate_images_from_storyboard(storyboard: dict, output_dir: str) -> int:
+    """Generate images for all shots using configured image API.
 
-
-def _generate_image_img2img(prompt: str, reference_b64: str, api_base: str = "http://localhost:8787") -> str | None:
-    """Generate image via img2img using reference base64. Returns base64 or None."""
-    try:
-        result = http_post_json(
-            f"{api_base}/img2img",
-            {
-                "prompt": prompt,
-                "negative_prompt": "lowres, bad anatomy, blurry",
-                "init_images": [reference_b64],
-                "denoising_strength": 0.65,
-            },
-            timeout=120,
-        )
-        if "images" in result and result["images"]:
-            return result["images"][0]
-        if "image" in result:
-            return result["image"]
-        return None
-    except Exception as e:
-        print(f"   ⚠️ img2img failed: {e}", file=sys.stderr)
-        return None
-
-
-def _save_base64_image(b64_data: str, output_path: str) -> bool:
-    """Save base64-encoded image to file."""
-    import base64
-    try:
-        if b64_data.startswith("data:"):
-            b64_data = b64_data.split(",", 1)[1]
-        with open(output_path, "wb") as f:
-            f.write(base64.b64decode(b64_data))
-        return True
-    except Exception as e:
-        print(f"   ⚠️ Failed to save image {output_path}: {e}", file=sys.stderr)
-        return False
-
-
-def _generate_all_images(storyboard: dict, output_dir: str, api_base: str = "http://localhost:8787") -> int:
-    """Generate images for all shots. First shot: txt2img, rest: parallel img2img.
+    Strategy: first shot txt2img as reference → remaining img2img in parallel.
 
     Returns number of successfully generated images.
     """
-    images_dir = os.path.join(output_dir, "images")
-    os.makedirs(images_dir, exist_ok=True)
-
     # Collect all shots with prompts
-    shots_to_generate = []
+    shots_info = []
     for scene in storyboard.get("scenes", []):
         for shot in scene.get("shots", []):
             shot_id = shot.get("shot_id", "")
+            # Use English prompt for better image generation quality
             prompt = shot.get("image_prompt_en", shot.get("image_prompt_cn", ""))
             if not prompt or not shot_id:
                 continue
-            shots_to_generate.append({
+            shots_info.append({
                 "shot_id": shot_id,
                 "prompt": prompt,
-                "output_path": os.path.join(images_dir, f"shot_{shot_id.replace('.', '_')}.png"),
+                "output_filename": f"shot_{shot_id.replace('.', '_')}.png",
             })
 
-    if not shots_to_generate:
+    if not shots_info:
         print("   ⚠️ No shots with image prompts found")
         return 0
 
-    print(f"\n🖼️  开始生图：共 {len(shots_to_generate)} 个镜头")
-    print(f"   生图网关: {api_base}")
-    print(f"   策略: 第1张 txt2img → 其余并行 img2img")
-
-    # Step 1: First shot — txt2img
-    first = shots_to_generate[0]
-    ref_b64 = None
-    success_count = 0
-
-    print(f"   📸 镜头 {first['shot_id']} — txt2img ... ", end="", flush=True)
-    first_b64 = _generate_image_txt2img(first["prompt"], api_base)
-    if first_b64 and _save_base64_image(first_b64, first["output_path"]):
-        print(f"✅ {first['output_path']}")
-        ref_b64 = first_b64
-        success_count += 1
-    else:
-        print("❌")
-        return 0
-
-    if len(shots_to_generate) <= 1:
-        return success_count
-
-    # Step 2: Remaining shots — parallel img2img
-    remaining = shots_to_generate[1:]
-    print(f"   🎞️  剩余 {len(remaining)} 镜 — 并行 img2img (参考图: 镜头 {first['shot_id']})")
-
-    def _img2img_worker(shot_info):
-        b64 = _generate_image_img2img(shot_info["prompt"], ref_b64, api_base)
-        if b64 and _save_base64_image(b64, shot_info["output_path"]):
-            return True
-        return False
-
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = {
-            executor.submit(_img2img_worker, shot): shot
-            for shot in remaining
-        }
-        for future in as_completed(futures):
-            shot = futures[future]
-            try:
-                if future.result():
-                    print(f"   📸 镜头 {shot['shot_id']} ✅")
-                    success_count += 1
-                else:
-                    print(f"   📸 镜头 {shot['shot_id']} ❌")
-            except Exception as e:
-                print(f"   📸 镜头 {shot['shot_id']} ❌ ({e})")
-
-    return success_count
+    return run_batch_images(shots_info, output_dir)
 
 
 # ── Main entry point ────────────────────────────────────────────────────────────
@@ -599,7 +495,7 @@ def run_storyboard(
 
     # ── Optional: Generate images ─────────────────────────────────────────────
     if image_api:
-        img_count = _generate_all_images(storyboard, storyboard_dir)
+        img_count = _generate_images_from_storyboard(storyboard, storyboard_dir)
         print(f"   🖼️  生图完成: {img_count}/{total_shots} 张")
 
         # Update JSON with image paths after generation
