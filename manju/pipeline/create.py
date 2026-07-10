@@ -11,6 +11,7 @@ import sys
 from datetime import datetime
 
 from manju.utils.ai import call_llm, parse_json_response
+from manju.utils.runtime import atomic_write_json, available_path, safe_filename
 
 
 # ── Script generation prompt ────────────────────────────────────────────────────
@@ -86,36 +87,43 @@ def _build_create_prompt(params: dict) -> tuple[str, str]:
 
 # ── Interactive collection ──────────────────────────────────────────────────────
 
-def _collect_params_interactive() -> dict:
+def _collect_params_interactive(initial: dict | None = None) -> dict:
     """Interactively collect script creation parameters from user."""
     print("🎬 manju create — AI漫剧剧本创作")
     print("=" * 50)
     print("（按 Enter 使用默认值，Ctrl+C 退出）\n")
 
-    params = {}
+    params = dict(initial or {})
 
-    params["title"] = input("1. 剧名: ").strip() or "未命名漫剧"
+    if not params.get("title"):
+        params["title"] = input("1. 剧名: ").strip() or "未命名漫剧"
 
     genres = ["古风", "现代", "科幻", "悬疑", "甜宠", "玄幻", "末日", "都市"]
-    print(f"2. 类型 [{'/'.join(genres)}]: ", end="")
-    genre = input().strip()
-    params["genre"] = genre if genre else "古风"
+    if not params.get("genre"):
+        print(f"2. 类型 [{'/'.join(genres)}]: ", end="")
+        genre = input().strip()
+        params["genre"] = genre if genre else "古风"
 
-    print("3. 一句话梗概（故事核，如「重生嫡女不再隐忍，开局手撕渣男」）:")
-    params["premise"] = input().strip()
+    if not params.get("premise"):
+        print("3. 一句话梗概（故事核，如「重生嫡女不再隐忍，开局手撕渣男」）:")
+        params["premise"] = input().strip()
 
-    print("4. 主角设定（姓名+性格+外貌关键特征，如「苏锦，18岁，冷艳嫡女，丹凤眼，月白襦裙」）:")
-    params["protagonist"] = input().strip()
+    if not params.get("protagonist"):
+        print("4. 主角设定（姓名+性格+外貌关键特征，如「苏锦，18岁，冷艳嫡女，丹凤眼，月白襦裙」）:")
+        params["protagonist"] = input().strip()
 
-    print("5. 核心冲突（主角想要什么？谁/什么在阻碍？）:")
-    params["conflict"] = input().strip()
+    if not params.get("conflict"):
+        print("5. 核心冲突（主角想要什么？谁/什么在阻碍？）:")
+        params["conflict"] = input().strip()
 
-    print("6. 世界观规则（特殊设定，如「修仙世界/灵力体系/末世丧尸」，无则回车）:")
-    params["world_rules"] = input().strip()
+    if "world_rules" not in params:
+        print("6. 世界观规则（特殊设定，如「修仙世界/灵力体系/末世丧尸」，无则回车）:")
+        params["world_rules"] = input().strip()
 
-    print("7. 目标场次 [6-8场]: ", end="")
-    target = input().strip()
-    params["target_duration"] = target if target else "6-8场"
+    if not params.get("target_duration"):
+        print("7. 目标场次 [6-8场]: ", end="")
+        target = input().strip()
+        params["target_duration"] = target if target else "6-8场"
 
     return params
 
@@ -142,9 +150,9 @@ def run_create(
         Script dict on success, None on failure.
     """
     # ── Collect params ─────────────────────────────────────────────────────
-    if interactive and not params:
+    if interactive:
         try:
-            params = _collect_params_interactive()
+            params = _collect_params_interactive(params)
         except (KeyboardInterrupt, EOFError):
             print("\n⚠ 用户取消")
             return None
@@ -195,10 +203,9 @@ def run_create(
     script["creation_date"] = datetime.now().isoformat()
 
     # ── Save JSON ──────────────────────────────────────────────────────────
-    safe_title = re.sub(r'[\\/*?:"<>|]', '_', title)
-    json_path = os.path.join(output_dir, f"{safe_title}_script.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(script, f, ensure_ascii=False, indent=2)
+    safe_title = safe_filename(title, "script")
+    json_path = available_path(os.path.join(output_dir, f"{safe_title}_script.json"))
+    atomic_write_json(json_path, script)
     print(f"   📄 剧本JSON → {json_path}")
 
     # ── Summary ────────────────────────────────────────────────────────────
@@ -217,4 +224,5 @@ def run_create(
     print(f"{'═' * 50}")
     print(f"\n下一步: manju storyboard \"{json_path}\"")
 
+    script["_output_path"] = json_path
     return script

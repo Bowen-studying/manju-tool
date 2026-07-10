@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "manju-tool"
-version = "0.5.0"
+version = "0.6.0"
 description = "AI 漫剧制作 CLI — 从文字到分镜/配音/视频，一条命令"
 authors = [
     {name = "manju", email = "manju@example.com"},
@@ -16,7 +16,8 @@ dependencies = [
     "click>=8.0",
     "openpyxl>=3.0",
     "python-docx>=1.0",
-    "weasyprint>=60.0",
+    "reportlab>=4.0",
+    "edge-tts>=7.0",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",

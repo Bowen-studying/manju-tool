@@ -5,6 +5,12 @@ import os
 import re
 import sys
 
+from manju.pipeline.storyboard_schema import (
+    get_audio,
+    get_spoken_text,
+    get_visual,
+    normalize_storyboard,
+)
 from manju.utils.ai import call_llm
 
 
@@ -28,6 +34,27 @@ EMOTION_PARAM_MAP = {
 
 DEFAULT_EMOTION_PARAMS = {"speed": 1.0, "pitch": 5, "volume": 5, "label": "日常对话"}
 
+EDGE_CAST = [
+    "zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural", "zh-CN-XiaoyiNeural",
+    "zh-CN-YunjianNeural", "zh-CN-XiaohanNeural", "zh-CN-YunyangNeural",
+]
+API_CAST = ["nova", "echo", "shimmer", "onyx", "alloy", "fable"]
+
+
+def _heuristic_emotion(item: dict) -> str:
+    combined = f"{item.get('dialogue', '')}{item.get('visual_desc', '')}{item.get('mood', '')}"
+    markers = re.findall(
+        r"【(愤怒|悲伤|兴奋|狂喜|恐惧|惊慌|冷漠|威胁|温柔|宠溺|焦急)】", combined)
+    if markers:
+        return markers[0]
+    rules = [
+        (["怒", "恨", "滚", "杀"], "愤怒"), (["呜", "哭", "泪", "痛", "悲"], "悲伤"),
+        (["怕", "不要", "救命"], "恐惧"), (["哼", "不屑", "冷笑"], "冷漠"),
+        (["快", "急", "来不及", "赶紧"], "焦急"),
+        (["乖", "宝宝", "爱你", "温柔"], "温柔"), (["哈", "笑", "太好了"], "兴奋"),
+    ]
+    return next((emotion for words, emotion in rules if any(word in combined for word in words)), "平静")
+
 
 def _batch_infer_emotions(dialogue_lines: list[dict]) -> dict[int, str]:
     """Batch-classify emotions for all dialogue lines using LLM.
@@ -40,18 +67,6 @@ def _batch_infer_emotions(dialogue_lines: list[dict]) -> dict[int, str]:
         return {}
 
     # ── Try LLM first ──────────────────────────────────────────────────────
-    lines_text = ""
-    for item in dialogue_lines:
-        visual = item.get("visual_desc", "")
-        if not isinstance(visual, str):
-            visual = ""
-        lines_text += (
-            f"[{item['idx']}] 角色={item['character']}, "
-            f"台词=\"{item['dialogue']}\", "
-            f"画面=\"{visual[:80]}\", "
-            f"场景氛围=\"{item['mood']}\"\n"
-        )
-
     system_prompt = (
         "你是一个漫剧配音导演。为每句对白选择最准确的情绪标签。\n"
         "可选标签：平静, 悲伤, 愤怒, 兴奋, 恐惧, 冷漠, 威胁, 温柔, 焦急, 内心独白\n\n"
@@ -64,45 +79,32 @@ def _batch_infer_emotions(dialogue_lines: list[dict]) -> dict[int, str]:
         "示例：\n[1] 冷漠\n[2] 愤怒\n[3] 威胁"
     )
 
-    response = call_llm(system_prompt, lines_text, max_tokens=500, temperature=0.1)
-    if response:
-        emotions = {}
+    emotions: dict[int, str] = {}
+    # Bounded chunks avoid output truncation on long scripts.
+    for start in range(0, len(dialogue_lines), 40):
+        chunk = dialogue_lines[start:start + 40]
+        lines_text = "".join(
+            f"[{item['idx']}] 角色={item['character']}, 台词=\"{item['dialogue']}\", "
+            f"画面=\"{str(item.get('visual_desc', ''))[:80]}\", 场景氛围=\"{item.get('mood', '')}\"\n"
+            for item in chunk
+        )
+        response = call_llm(system_prompt, lines_text, max_tokens=1200, temperature=0.1)
+        if not response:
+            continue
         pattern = re.findall(r"\[(\d+)\]\s*(\S+)", response)
         for idx_str, emo in pattern:
             idx = int(idx_str)
             if emo in EMOTION_PARAM_MAP:
                 emotions[idx] = emo
-        if emotions:
-            print(f"   🤖 LLM情绪分类: {len(emotions)}/{len(dialogue_lines)} 句")
-            return emotions
-
-    # ── Keyword fallback ───────────────────────────────────────────────────
-    print(f"   ⚡ 使用关键词情绪推断（LLM不可用）")
-    emotions = {}
+    missing = 0
     for item in dialogue_lines:
-        combined = item["dialogue"] + item["visual_desc"] + item["mood"]
-        markers = re.findall(
-            r"【(愤怒|悲伤|兴奋|狂喜|恐惧|惊慌|冷漠|威胁|温柔|宠溺|焦急)】", combined
-        )
-        if markers:
-            emotions[item["idx"]] = markers[0]
-            continue
-        if any(w in combined for w in ["怒", "恨", "滚", "杀"]):
-            emotions[item["idx"]] = "愤怒"
-        elif any(w in combined for w in ["呜", "哭", "泪", "痛", "悲"]):
-            emotions[item["idx"]] = "悲伤"
-        elif any(w in combined for w in ["怕", "不要", "救命"]):
-            emotions[item["idx"]] = "恐惧"
-        elif any(w in combined for w in ["哼", "不屑", "冷笑"]):
-            emotions[item["idx"]] = "冷漠"
-        elif any(w in combined for w in ["快", "急", "来不及", "赶紧"]):
-            emotions[item["idx"]] = "焦急"
-        elif any(w in combined for w in ["乖", "宝宝", "爱你", "温柔"]):
-            emotions[item["idx"]] = "温柔"
-        elif any(w in combined for w in ["哈", "笑", "太好了"]):
-            emotions[item["idx"]] = "兴奋"
-        else:
-            emotions[item["idx"]] = "平静"
+        if item["idx"] not in emotions:
+            emotions[item["idx"]] = _heuristic_emotion(item)
+            missing += 1
+    if missing:
+        print(f"   ⚡ {missing} 句使用关键词情绪推断")
+    if len(emotions) > missing:
+        print(f"   🤖 LLM情绪分类: {len(emotions) - missing}/{len(dialogue_lines)} 句")
     return emotions
 
 
@@ -202,8 +204,8 @@ def _generate_voice_scripts(storyboard: dict) -> list[dict]:
 
         for shot in scene.get("shots", []):
             shot_id = shot.get("shot_id", "?")
-            dialogue = shot.get("dialogue_narration", "")
-            visual_desc = shot.get("visual_description", "")
+            dialogue = get_spoken_text(shot)
+            visual_desc = get_visual(shot, "description")
 
             idx += 1
             if not dialogue or not dialogue.strip():
@@ -215,8 +217,11 @@ def _generate_voice_scripts(storyboard: dict) -> list[dict]:
                 })
                 continue
 
-            character = _parse_character_from_dialogue(dialogue)
-            text = _clean_dialogue_text(dialogue)
+            explicit_speaker = get_audio(shot, "speaker")
+            character = explicit_speaker or _parse_character_from_dialogue(dialogue)
+            # v2 already separates speaker from dialogue. Only strip a prefix
+            # when consuming legacy combined text such as "角色：台词".
+            text = dialogue if explicit_speaker else _clean_dialogue_text(dialogue)
 
             if not text or not text.strip():
                 silent_shots.append({
@@ -244,6 +249,16 @@ def _generate_voice_scripts(storyboard: dict) -> list[dict]:
     # ── Phase 2: batch-classify emotions ─────────────────────────────────
     emotions = _batch_infer_emotions(dialogue_lines) if dialogue_lines else {}
 
+    # Stable per-project voice casting: each character keeps one voice.
+    character_order = list(dict.fromkeys(item["character"] for item in dialogue_lines))
+    cast = {
+        character: {
+            "voice_edge": EDGE_CAST[index % len(EDGE_CAST)],
+            "voice_api": API_CAST[index % len(API_CAST)],
+        }
+        for index, character in enumerate(character_order)
+    }
+
     # ── Phase 3: build voice entries (all shots, sorted by idx) ────────────
     for item in dialogue_lines:
         emotion = emotions.get(item["idx"], "平静")
@@ -251,6 +266,7 @@ def _generate_voice_scripts(storyboard: dict) -> list[dict]:
         voice_desc = _generate_voice_description(item["character"], emotion, params)
 
         voice_scripts.append({
+            "_order": item["idx"],
             "shot_id": item["shot_id"],
             "scene_id": item["scene_id"],
             "character": item["character"],
@@ -261,11 +277,13 @@ def _generate_voice_scripts(storyboard: dict) -> list[dict]:
             "pitch": params["pitch"],
             "volume": params["volume"],
             "voice_description": voice_desc,
+            **cast[item["character"]],
         })
 
     # Add silent shots to complete the full shot list
     for s in silent_shots:
         voice_scripts.append({
+            "_order": s["idx"],
             "shot_id": s["shot_id"],
             "scene_id": s["scene_id"],
             "character": s["character"],
@@ -276,9 +294,13 @@ def _generate_voice_scripts(storyboard: dict) -> list[dict]:
             "pitch": s["pitch"],
             "volume": s["volume"],
             "voice_description": s["voice_description"],
+            "voice_edge": "",
+            "voice_api": "",
         })
 
-    voice_scripts.sort(key=lambda x: str(x["shot_id"]))
+    voice_scripts.sort(key=lambda item: item["_order"])
+    for item in voice_scripts:
+        del item["_order"]
 
     return voice_scripts
 
@@ -311,15 +333,28 @@ def _generate_voice_markdown(voice_scripts: list[dict], title: str) -> str:
             pitch = vs.get("pitch", 5)
             volume = vs.get("volume", 5)
             voice_desc = vs.get("voice_description", "")
+            voice_edge = vs.get("voice_edge", "")
+            voice_api = vs.get("voice_api", "")
 
             lines.append(f"### {i}. 镜头 {shot_id}")
             lines.append("")
             lines.append(f"| 参数 | 值 |")
             lines.append(f"|------|------|")
             lines.append(f"| **情绪** | {emotion} |")
-            lines.append(f"| **语速** | {speed} ({_speed_desc(speed)}) |")
-            lines.append(f"| **声调** | {pitch} ({_pitch_desc(pitch)}) |")
-            lines.append(f"| **音量** | {volume}/10 |")
+            if isinstance(speed, (int, float)) and isinstance(pitch, int):
+                lines.append(f"| **语速** | {speed} ({_speed_desc(speed)}) |")
+                lines.append(f"| **声调** | {pitch} ({_pitch_desc(pitch)}) |")
+                lines.append(f"| **音量** | {volume}/10 |")
+            else:
+                # Silent shots intentionally carry display placeholders rather
+                # than numeric TTS parameters.
+                lines.append(f"| **语速** | {speed} |")
+                lines.append(f"| **声调** | {pitch} |")
+                lines.append(f"| **音量** | {volume} |")
+            if voice_edge:
+                lines.append(f"| **Edge 音色** | {voice_edge} |")
+            if voice_api:
+                lines.append(f"| **API 音色** | {voice_api} |")
             lines.append("")
             lines.append(f"**对白文本**:")
             lines.append(f"> {text}")
@@ -338,6 +373,7 @@ def _generate_voice_markdown(voice_scripts: list[dict], title: str) -> str:
 def run_voice(
     storyboard_path: str,
     output_dir: str | None = None,
+    strict_exports: bool = False,
 ) -> list[dict] | None:
     """Generate voice scripts from storyboard JSON.
 
@@ -355,6 +391,7 @@ def run_voice(
     except Exception as e:
         print(f"❌ 读取 storyboard.json 失败: {e}", file=sys.stderr)
         return None
+    storyboard = normalize_storyboard(storyboard)
 
     title = storyboard.get("title", "未命名")
 
@@ -397,6 +434,8 @@ def run_voice(
         print(f"   📕 voice_scripts.pdf → {pdf_path}")
     except Exception as e:
         print(f"   ⚠ PDF: {e}")
+        if strict_exports:
+            return None
 
     # ── Save Markdown ─────────────────────────────────────────────────────────
     md_path = os.path.join(output_dir, "voice_scripts.md")

@@ -2,6 +2,7 @@
 
 import os
 import sys
+from html import escape
 
 def write_use_guide(output_dir: str, files: dict, title: str = ""):
     """Generate a user guide PDF+DOCX — no product names, no ads."""
@@ -28,11 +29,11 @@ def write_use_guide(output_dir: str, files: dict, title: str = ""):
 <tr><th>文件</th><th>用途</th><th>下一步</th></tr>
 """
     if "storyboard_xlsx" in files:
-        html += f'<tr><td>{files["storyboard_xlsx"]}</td><td>分镜表</td><td>打开查看和编辑，每镜含景别、构图、运镜、画面描述、中英文生图和视频提示词</td></tr>'
+        html += f'<tr><td>{escape(str(files["storyboard_xlsx"]))}</td><td>分镜表</td><td>打开查看和编辑，每镜含景别、构图、运镜、画面描述、中英文生图和视频提示词</td></tr>'
     if "voice_pdf" in files:
-        html += f'<tr><td>{files["voice_pdf"]}</td><td>配音脚本</td><td>按情绪、语速、声调、音量参数进行配音</td></tr>'
+        html += f'<tr><td>{escape(str(files["voice_pdf"]))}</td><td>配音脚本</td><td>按情绪、语速、声调、音量参数进行配音</td></tr>'
     if "video_pdf" in files:
-        html += f'<tr><td>{files["video_pdf"]}</td><td>视频提示词</td><td>逐镜使用中英文提示词生成视频片段</td></tr>'
+        html += f'<tr><td>{escape(str(files["video_pdf"]))}</td><td>视频提示词</td><td>逐镜使用中英文提示词生成视频片段</td></tr>'
     html += '</table>'
 
     html += '''
@@ -74,10 +75,62 @@ def write_use_guide(output_dir: str, files: dict, title: str = ""):
 </ol>
 </body></html>'''
 
+    generated = {}
+    pdf_path = os.path.join(output_dir, "使用指南.pdf")
     try:
-        from weasyprint import HTML
-        pdf_path = os.path.join(output_dir, "使用指南.pdf")
-        HTML(string=html).write_pdf(pdf_path)
+        from manju.utils.reportlab_pdf import write_guide_pdf
+
+        write_guide_pdf(pdf_path, files, title)
         print(f"   📕 使用指南.pdf → {pdf_path}")
+        generated["pdf"] = pdf_path
     except Exception as e:
-        print(f"   ⚠ 使用指南: {e}", file=sys.stderr)
+        print(f"   ⚠ ReportLab 不可用，改用 WeasyPrint: {e}", file=sys.stderr)
+
+    if "pdf" not in generated:
+        try:
+            from weasyprint import HTML
+
+            def blocked_fetcher(url, *args, **kwargs):
+                raise ValueError(f"external resource blocked: {url}")
+            HTML(string=html, url_fetcher=blocked_fetcher).write_pdf(pdf_path)
+            print(f"   📕 使用指南.pdf → {pdf_path}")
+            generated["pdf"] = pdf_path
+        except Exception as e:
+            print(f"   ⚠ 使用指南 PDF: {e}", file=sys.stderr)
+
+    try:
+        from docx import Document
+        doc = Document()
+        doc.add_heading("使用指南", 0)
+        doc.add_paragraph("以下为生成的全部交付物，请按顺序使用。")
+        doc.add_heading("文件清单", level=1)
+        table = doc.add_table(rows=1, cols=3)
+        for cell, value in zip(table.rows[0].cells, ("文件", "用途", "下一步")):
+            cell.text = value
+        descriptions = {
+            "storyboard_xlsx": ("分镜表", "检查画面、对白、提示词"),
+            "voice_pdf": ("配音脚本", "按角色和情绪生成配音"),
+            "video_pdf": ("视频提示词", "逐镜生成视频素材"),
+        }
+        for key, path in files.items():
+            if key not in descriptions:
+                continue
+            row = table.add_row().cells
+            row[0].text = str(path)
+            row[1].text, row[2].text = descriptions[key]
+        for heading, body in [
+            ("确认分镜", "检查镜头顺序、人物一致性、对白、景别与时长。"),
+            ("生成图片", "按镜头生成静态图片；内容变化后缓存会自动失效。"),
+            ("生成视频", "使用参考图和视频提示词逐镜生成视频素材。"),
+            ("配音", "按角色固定音色、情绪、语速和音量生成音频。"),
+            ("剪辑合成", "在剪辑软件中对齐视频、配音、字幕和音效后导出成片。"),
+        ]:
+            doc.add_heading(heading, level=1)
+            doc.add_paragraph(body)
+        docx_path = os.path.join(output_dir, "使用指南.docx")
+        doc.save(docx_path)
+        generated["docx"] = docx_path
+        print(f"   📘 使用指南.docx → {docx_path}")
+    except Exception as e:
+        print(f"   ⚠ 使用指南 Word: {e}", file=sys.stderr)
+    return generated

@@ -1,344 +1,257 @@
-"""manju generate — text/image-to-video via configurable API.
+"""Text/image-to-video generation with resumable polling and safe caching."""
 
-Supports video generation through any compatible API endpoint.
-Configure in ~/.manju.env:
-  MANJU_VIDEO_API_KEY=sk-...         (required)
-  MANJU_VIDEO_API_BASE=https://...    (required)
-  MANJU_VIDEO_MODEL=model-name        (optional)
-  MANJU_VIDEO_POLL_BASE=https://...   (optional, for async polling)
-
-Or set environment variables with the same names.
-"""
+from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime
 
 from manju.utils.config import load_manju_env
+from manju.utils.runtime import (
+    atomic_write_json,
+    content_fingerprint,
+    file_data_url,
+    join_api_url,
+    read_json,
+    safe_filename,
+)
 
-DEFAULT_FRAMES = 121   # ~5s at 24fps
+DEFAULT_FRAMES = 121
 DEFAULT_FPS = 24
 DEFAULT_SIZE = "768x512"
-
-
-# ── Config ─────────────────────────────────────────────────────────────────────
-
-def _get_video_config() -> dict:
-    """Read video API config from env or ~/.manju.env.
-
-    Returns dict with keys: api_base, api_key, model, poll_base.
-    """
-    config = {
-        "api_base": "",
-        "api_key": "",
-        "model": "",
-        "poll_base": "",
-    }
-
-    env_keys = load_manju_env()
-
-    for manju_key, config_key in [
-        ("MANJU_VIDEO_API_BASE", "api_base"),
-        ("MANJU_VIDEO_API_KEY", "api_key"),
-        ("MANJU_VIDEO_MODEL", "model"),
-        ("MANJU_VIDEO_POLL_BASE", "poll_base"),
-    ]:
-        val = env_keys.get(manju_key, "")
-        if val:
-            config[config_key] = val
-
-    # Fallback: if no MANJU_VIDEO_API_KEY but AGNES_API_KEY exists, use that
-    if not config["api_key"]:
-        agnes_key = env_keys.get("AGNES_API_KEY", "")
-        if agnes_key:
-            config["api_key"] = agnes_key
-            if not config["api_base"]:
-                config["api_base"] = "https://apihub.agnes-ai.com/v1"
-            if not config["model"]:
-                config["model"] = "agnes-video-v2.0"
-            if not config["poll_base"]:
-                config["poll_base"] = "https://apihub.agnes-ai.com/agnesapi"
-
-    return config
-
-
-# ── Validation ─────────────────────────────────────────────────────────────────
-
-# num_frames must be ≤ 441 and satisfy 8n+1
 _MIN_FRAMES = 25
 _MAX_FRAMES = 441
 
 
+def _get_video_config() -> dict:
+    env = load_manju_env()
+    return {
+        "api_base": env.get("MANJU_VIDEO_API_BASE", ""),
+        "api_key": env.get("MANJU_VIDEO_API_KEY", ""),
+        "model": env.get("MANJU_VIDEO_MODEL", ""),
+        "poll_base": env.get("MANJU_VIDEO_POLL_BASE", ""),
+        "max_wait": int(env.get("MANJU_VIDEO_MAX_WAIT", "600") or 600),
+    }
+
+
 def _nearest_frames(target: int) -> int:
-    """Compute nearest valid frame count (8n+1, clamped to [25, 441])."""
-    n = max(3, (target - 1) // 8)
-    lower = 8 * n + 1
-    upper = min(8 * (n + 1) + 1, _MAX_FRAMES)
-    if lower > _MAX_FRAMES:
-        return _MAX_FRAMES
-    if abs(target - lower) <= abs(target - upper):
-        return lower
-    return upper
+    target = max(_MIN_FRAMES, min(int(target), _MAX_FRAMES))
+    lower = max(_MIN_FRAMES, ((target - 1) // 8) * 8 + 1)
+    upper = min(_MAX_FRAMES, lower + 8)
+    return lower if abs(target - lower) <= abs(target - upper) else upper
 
 
 def _validate_size(size: str) -> str:
-    """Ensure size is valid (multiples of 64). Returns normalized size or default."""
-    parts = size.lower().split("x")
-    if len(parts) != 2:
-        return DEFAULT_SIZE
     try:
-        w, h = int(parts[0]), int(parts[1])
-    except ValueError:
+        width, height = (int(value) for value in str(size).lower().split("x", 1))
+    except (ValueError, TypeError):
         return DEFAULT_SIZE
-    w = max(64, (w // 64) * 64)
-    h = max(64, (h // 64) * 64)
-    return f"{w}x{h}"
+    return f"{max(64, width // 64 * 64)}x{max(64, height // 64 * 64)}"
 
 
-# ── API calls ─────────────────────────────────────────────────────────────────
+def _request_json(request: urllib.request.Request, timeout: int, retries: int = 2) -> dict | None:
+    for attempt in range(retries + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                result = json.loads(response.read().decode("utf-8"))
+            return result if isinstance(result, dict) else None
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode(errors="replace")[:500]
+            print(f"   ❌ 视频API HTTP {exc.code}: {detail}", file=sys.stderr)
+            if exc.code != 429 and exc.code < 500:
+                return None
+        except urllib.error.URLError as exc:
+            print(f"   ⚠ 视频API网络错误: {exc.reason}", file=sys.stderr)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f"   ⚠ 视频API响应错误: {exc}", file=sys.stderr)
+            return None
+        if attempt < retries:
+            time.sleep(2 ** attempt)
+    return None
 
-def _create_video(
-    prompt: str,
-    image_url: str = "",
-    num_frames: int = DEFAULT_FRAMES,
-    frame_rate: int = DEFAULT_FPS,
-    size: str = DEFAULT_SIZE,
-    cfg: dict | None = None,
-) -> dict | None:
-    """Submit a video generation task. Returns response dict or None."""
-    if cfg is None:
-        cfg = _get_video_config()
 
-    if not cfg["api_key"]:
-        print("   ⚠ 视频API密钥未配置 (设置 MANJU_VIDEO_API_KEY)", file=sys.stderr)
+def _find_url(result: dict) -> str:
+    for key in ("url", "video_url", "download_url"):
+        value = result.get(key)
+        if isinstance(value, str) and value:
+            return value
+    for key in ("output", "data", "result"):
+        nested = result.get(key)
+        if isinstance(nested, dict):
+            found = _find_url(nested)
+            if found:
+                return found
+        if isinstance(nested, list):
+            for item in nested:
+                if isinstance(item, dict):
+                    found = _find_url(item)
+                    if found:
+                        return found
+    return ""
+
+
+def _find_id(result: dict) -> str:
+    for key in ("video_id", "task_id", "id"):
+        value = result.get(key)
+        if value is not None and str(value):
+            return str(value)
+    for key in ("data", "result", "output"):
+        nested = result.get(key)
+        if isinstance(nested, dict):
+            found = _find_id(nested)
+            if found:
+                return found
+    return ""
+
+
+def _create_video(prompt: str, image_url: str = "", num_frames: int = DEFAULT_FRAMES,
+                  frame_rate: int = DEFAULT_FPS, size: str = DEFAULT_SIZE,
+                  cfg: dict | None = None) -> dict | None:
+    cfg = cfg or _get_video_config()
+    if not cfg.get("api_key") or not cfg.get("api_base"):
+        print("❌ 视频API配置不完整", file=sys.stderr)
         return None
-    if not cfg["api_base"]:
-        print("   ⚠ 视频API地址未配置 (设置 MANJU_VIDEO_API_BASE)", file=sys.stderr)
-        return None
-
-    num_frames = _nearest_frames(num_frames)
-    size = _validate_size(size)
-
     payload = {
-        "model": cfg["model"],
-        "prompt": prompt,
-        "num_frames": num_frames,
-        "frame_rate": frame_rate,
-        "size": size,
+        "model": cfg.get("model", ""), "prompt": prompt,
+        "num_frames": _nearest_frames(num_frames), "frame_rate": max(1, int(frame_rate)),
+        "size": _validate_size(size),
     }
-
     if image_url:
         payload["image"] = image_url
-        mode = "img2video"
-    else:
-        mode = "txt2video"
-
-    duration = num_frames / frame_rate
-    model_info = f" | model={cfg['model']}" if cfg["model"] else ""
-    print(f"   🎥 {mode}: {num_frames}帧@{frame_rate}fps ≈ {duration:.1f}s, {size}{model_info}")
-
-    try:
-        req = urllib.request.Request(
-            f"{cfg['api_base'].rstrip('/')}/videos",
-            data=json.dumps(payload).encode(),
-            headers={
-                "Authorization": f"Bearer {cfg['api_key']}",
-                "Content-Type": "application/json",
-            },
-        )
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            result = json.loads(resp.read().decode())
-    except urllib.error.URLError as e:
-        print(f"   ❌ 视频API网络错误: {e.reason}", file=sys.stderr)
+    request = urllib.request.Request(
+        join_api_url(cfg["api_base"], "videos"),
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Authorization": f"Bearer {cfg['api_key']}",
+                 "Content-Type": "application/json"},
+    )
+    result = _request_json(request, timeout=60)
+    if result and result.get("error"):
+        print(f"   ❌ 视频API错误: {result['error']}", file=sys.stderr)
         return None
-    except urllib.error.HTTPError as e:
-        body = ""
-        try:
-            body = e.read().decode()[:200]
-        except Exception:
-            pass
-        print(f"   ❌ 视频API HTTP {e.code}: {body}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"   ❌ 提交失败: {e}", file=sys.stderr)
-        return None
-
-    if "error" in result:
-        err_msg = result["error"]
-        if isinstance(err_msg, dict):
-            err_msg = err_msg.get("message", str(err_msg))
-        print(f"   ❌ API错误: {err_msg}", file=sys.stderr)
-        return None
-
     return result
 
 
-def _poll_video(video_id: str, cfg: dict | None = None, max_wait: int = 600) -> str | None:
-    """Poll for video completion. Returns download URL or None on timeout/failure."""
-    if cfg is None:
-        cfg = _get_video_config()
-
-    if not cfg["api_key"]:
-        return None
-
-    # Build poll URL: use configured poll_base, or derive from api_base
+def _poll_url(video_id: str, cfg: dict) -> str:
     poll_base = cfg.get("poll_base", "")
     if poll_base:
-        query_url = f"{poll_base.rstrip('/')}?video_id={video_id}"
-    else:
-        query_url = f"{cfg['api_base'].rstrip('/')}/videos/{video_id}"
+        if "{video_id}" in poll_base:
+            return poll_base.replace("{video_id}", video_id)
+        separator = "&" if "?" in poll_base else "?"
+        return f"{poll_base.rstrip('/')}{separator}video_id={video_id}"
+    return join_api_url(cfg["api_base"], f"videos/{video_id}")
 
-    start = time.time()
-    interval = 5
 
-    print(f"   ⏳ 等待生成 (video_id={video_id[:12]}...)")
-    dots = 0
-
-    while time.time() - start < max_wait:
-        try:
-            req = urllib.request.Request(
-                query_url,
-                headers={"Authorization": f"Bearer {cfg['api_key']}"},
-            )
-            with urllib.request.urlopen(req, timeout=10) as resp:
-                result = json.loads(resp.read().decode())
-        except urllib.error.URLError as e:
-            print(f"\n   ⚠ 查询网络错误: {e.reason}", file=sys.stderr)
-            time.sleep(interval)
-            continue
-        except Exception as e:
-            print(f"\n   ⚠ 查询异常: {e}", file=sys.stderr)
-            time.sleep(interval)
-            continue
-
-        status = result.get("status", "")
-        dots += 1
-        if dots % 6 == 0:
-            elapsed = int(time.time() - start)
-            print(f"   ... {status} ({elapsed}s)")
-
-        if status == "completed":
-            url = result.get("url") or result.get("video_url") or ""
-            if url:
-                elapsed = int(time.time() - start)
-                print(f"\n   ✅ 生成完成 ({elapsed}s)")
+def _poll_video(video_id: str, cfg: dict | None = None, max_wait: int | None = None) -> str | None:
+    cfg = cfg or _get_video_config()
+    max_wait = int(max_wait if max_wait is not None else cfg.get("max_wait", 600))
+    query_url = _poll_url(video_id, cfg)
+    started = time.monotonic()
+    interval = 3
+    consecutive_errors = 0
+    success_states = {"completed", "succeeded", "success", "done", "finished"}
+    failure_states = {"failed", "error", "cancelled", "canceled", "expired"}
+    while time.monotonic() - started < max_wait:
+        request = urllib.request.Request(
+            query_url, headers={"Authorization": f"Bearer {cfg['api_key']}"})
+        result = _request_json(request, timeout=15, retries=0)
+        if result is None:
+            consecutive_errors += 1
+            if consecutive_errors >= 5:
+                print("   ❌ 连续查询失败，停止轮询", file=sys.stderr)
+                return None
+        else:
+            consecutive_errors = 0
+            url = _find_url(result)
+            status = str(result.get("status") or result.get("state") or "").lower()
+            if url and (not status or status in success_states):
                 return url
-            print(f"\n   ⚠ 状态为completed但无URL", file=sys.stderr)
-            return None
-
-        if status == "failed":
-            err = result.get("error", "unknown")
-            print(f"\n   ❌ 生成失败: {err}", file=sys.stderr)
-            return None
-
+            if status in success_states:
+                print("   ❌ 任务完成但响应缺少视频URL", file=sys.stderr)
+                return None
+            if status in failure_states:
+                print(f"   ❌ 视频任务失败: {result.get('error') or status}", file=sys.stderr)
+                return None
         time.sleep(interval)
-
-    print(f"\n   ⚠ 超时 ({max_wait}s)，可手动查询 video_id={video_id}")
+        interval = min(10, interval + 1)
+    print(f"   ⚠ 视频生成超时 ({max_wait}s)，任务ID={video_id}", file=sys.stderr)
     return None
 
 
 def _download_video(url: str, output_path: str) -> bool:
-    """Download video from URL to local path."""
     try:
-        req = urllib.request.Request(url)
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            content = resp.read()
-        output_dir = os.path.dirname(output_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-        with open(output_path, "wb") as f:
-            f.write(content)
-        size_mb = len(content) / (1024 * 1024)
-        print(f"   📥 下载完成: {output_path} ({size_mb:.1f}MB)")
+        with urllib.request.urlopen(urllib.request.Request(url), timeout=300) as response:
+            content = response.read()
+        if not content:
+            return False
+        os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+        with open(output_path, "wb") as handle:
+            handle.write(content)
         return True
-    except urllib.error.URLError as e:
-        print(f"   ❌ 下载网络错误: {e.reason}", file=sys.stderr)
-        return False
-    except Exception as e:
-        print(f"   ❌ 下载失败: {e}", file=sys.stderr)
-        return False
+    except urllib.error.HTTPError as exc:
+        print(f"   ❌ 视频下载 HTTP {exc.code}", file=sys.stderr)
+    except (urllib.error.URLError, OSError) as exc:
+        print(f"   ❌ 视频下载失败: {exc}", file=sys.stderr)
+    return False
 
 
-# ── Main entry point ──────────────────────────────────────────────────────────
-
-def run_generate(
-    prompt: str,
-    image_path: str = "",
-    num_frames: int = DEFAULT_FRAMES,
-    frame_rate: int = DEFAULT_FPS,
-    size: str = DEFAULT_SIZE,
-    output_dir: str | None = None,
-) -> str | None:
-    """Generate a video from text prompt (and optionally a reference image).
-
-    Args:
-        prompt: Text prompt describing the video content
-        image_path: Image URL for img2video mode (optional)
-        num_frames: Frame count (will be adjusted to nearest 8n+1)
-        frame_rate: FPS
-        size: Resolution like "768x512"
-        output_dir: Output directory
-
-    Returns:
-        Path to downloaded video file, or None on failure.
-    """
+def run_generate(prompt: str, image_path: str = "", num_frames: int = DEFAULT_FRAMES,
+                 frame_rate: int = DEFAULT_FPS, size: str = DEFAULT_SIZE,
+                 output_dir: str | None = None, output_name: str = "") -> str | None:
     cfg = _get_video_config()
-    if not cfg["api_key"]:
-        print("❌ 未配置视频API。请在 ~/.manju.env 中设置:", file=sys.stderr)
-        print("   MANJU_VIDEO_API_KEY=your-key", file=sys.stderr)
-        print("   MANJU_VIDEO_API_BASE=https://your-api.example.com/v1", file=sys.stderr)
-        print("   MANJU_VIDEO_MODEL=your-model-name", file=sys.stderr)
+    if not cfg.get("api_key") or not cfg.get("api_base"):
+        print("❌ 未配置视频API", file=sys.stderr)
         return None
-
-    if output_dir is None:
-        now = datetime.now()
-        today = f"{now.year}.{now.month}.{now.day}"
-        output_dir = os.path.join(os.getcwd(), "manju-output", today)
+    output_dir = output_dir or os.path.join(os.getcwd(), "manju-output", "videos")
     os.makedirs(output_dir, exist_ok=True)
-
-    # Determine image URL
-    image_url = ""
-    if image_path:
-        if image_path.startswith("http://") or image_path.startswith("https://"):
-            image_url = image_path
-        elif os.path.exists(image_path):
-            print("   ⚠ 本地图片需公网URL，当前仅支持txt2video", file=sys.stderr)
-            return None
-        else:
-            print(f"   ⚠ 图片路径无效: {image_path}", file=sys.stderr)
-            return None
-
-    # Step 1: Submit
-    result = _create_video(prompt, image_url, num_frames, frame_rate, size, cfg)
-    if not result:
+    normalized_size = _validate_size(size)
+    image_identity = ""
+    if image_path and os.path.isfile(image_path):
+        image_identity = content_fingerprint(os.path.getsize(image_path), os.path.getmtime(image_path))
+        image_url = file_data_url(image_path)
+    elif image_path.startswith(("http://", "https://", "data:")):
+        image_identity = image_path
+        image_url = image_path
+    elif image_path:
+        print(f"❌ 参考图片不存在: {image_path}", file=sys.stderr)
         return None
-
-    # Extract video_id from response
-    video_id = result.get("video_id") or result.get("id") or result.get("task_id") or ""
-    if not video_id:
-        print("   ⚠ 响应中未找到 video_id", file=sys.stderr)
-        print(f"   Response: {json.dumps(result, indent=2)[:500]}")
-        return None
-
-    # Step 2: Poll
-    url = _poll_video(video_id, cfg)
-    if not url:
-        # Save video_id for manual recovery
-        id_path = os.path.join(output_dir, "video_id.txt")
-        poll_base = cfg.get("poll_base", cfg["api_base"])
-        with open(id_path, "w") as f:
-            f.write(f"video_id={video_id}\nquery_url={poll_base}?video_id={video_id}\n")
-        print(f"   📝 video_id 已保存: {id_path}")
-        return None
-
-    # Step 3: Download
-    safe_prompt = re.sub(r'[\\/*?:"<>|]', '_', prompt[:30])
-    output_path = os.path.join(output_dir, f"video_{safe_prompt}.mp4")
-    if _download_video(url, output_path):
+    else:
+        image_url = ""
+    fingerprint = content_fingerprint(
+        prompt, image_identity, _nearest_frames(num_frames), frame_rate, normalized_size, cfg.get("model"))
+    filename = safe_filename(output_name or f"video_{prompt[:30]}", "video") + ".mp4"
+    output_path = os.path.join(output_dir, filename)
+    metadata_path = f"{output_path}.manju.json"
+    metadata = read_json(metadata_path)
+    if (metadata and metadata.get("fingerprint") == fingerprint
+            and os.path.isfile(output_path) and os.path.getsize(output_path) > 1024):
+        print(f"   ⏭ 内容未变化: {output_path}")
         return output_path
 
-    return None
+    result = _create_video(prompt, image_url, num_frames, frame_rate, normalized_size, cfg)
+    if not result:
+        return None
+    url = _find_url(result)
+    video_id = _find_id(result)
+    if not url and video_id:
+        url = _poll_video(video_id, cfg) or ""
+    if not url:
+        recovery = {
+            "video_id": video_id,
+            "query_url": _poll_url(video_id, cfg) if video_id else "",
+            "fingerprint": fingerprint,
+            "prompt": prompt,
+        }
+        atomic_write_json(os.path.join(output_dir, f"video_recovery_{fingerprint}.json"), recovery)
+        return None
+    if not _download_video(url, output_path):
+        return None
+    atomic_write_json(metadata_path, {
+        "fingerprint": fingerprint, "prompt": prompt, "reference": image_path,
+        "model": cfg.get("model", ""), "task_id": video_id,
+    })
+    print(f"   ✅ 视频已保存: {output_path}")
+    return output_path

@@ -9,9 +9,12 @@ import json
 import os
 import re
 import sys
+import time
 import urllib.request
+import urllib.error
 
 from manju.utils.config import load_manju_env
+from manju.utils.runtime import join_api_url
 
 
 # ── Cached AI config ───────────────────────────────────────────────────────────
@@ -19,11 +22,17 @@ from manju.utils.config import load_manju_env
 _AI_CONFIG = None
 
 
+def reset_ai_config() -> None:
+    """Clear cached credentials for long-running processes and tests."""
+    global _AI_CONFIG
+    _AI_CONFIG = None
+
+
 def get_ai_config():
     """Return (api_url, model, api_key) from environment or ~/.manju.env.
 
-    Priority: LLM_API_KEY > provider-specific keys (DEEPSEEK_API_KEY, GLM_API_KEY).
-    When using LLM_API_KEY, LLM_API_BASE and LLM_MODEL configure the endpoint.
+    LLM_API_KEY, LLM_API_BASE and LLM_MODEL configure a neutral,
+    OpenAI-compatible endpoint.
 
     Results are cached after the first successful lookup.
     Returns (None, None, None) if no provider is configured.
@@ -34,47 +43,48 @@ def get_ai_config():
 
     env_keys = load_manju_env()
 
-    # Priority 1: Generic LLM_API_KEY (takes priority over all provider-specific keys)
     generic_key = env_keys.get("LLM_API_KEY", "")
     if generic_key:
         generic_base = env_keys.get("LLM_API_BASE", "")
         generic_model = env_keys.get("LLM_MODEL", "")
         if generic_base and generic_model:
-            _AI_CONFIG = (generic_base, generic_model, generic_key)
+            _AI_CONFIG = (join_api_url(generic_base, "chat/completions"), generic_model, generic_key)
             return _AI_CONFIG
-        # If LLM_API_KEY is set but base/model are missing, warn and fall through
+        # A partial generic configuration is not usable.
         if not generic_base:
             print("   ⚠ LLM_API_KEY 已设置但 LLM_API_BASE 未配置", file=sys.stderr)
         if not generic_model:
             print("   ⚠ LLM_API_KEY 已设置但 LLM_MODEL 未配置", file=sys.stderr)
 
-    # Priority 2: Provider-specific keys (backward compatibility)
-    providers = [
-        ("deepseek", "https://api.deepseek.com/v1/chat/completions",
-         "deepseek-chat", "DEEPSEEK_API_KEY"),
-        ("glm", "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-         "glm-4.5-air", "GLM_API_KEY"),
-    ]
-    for _name, url, model, key_env in providers:
-        key = env_keys.get(key_env, "")
-        if key:
-            _AI_CONFIG = (url, model, key)
-            return _AI_CONFIG
-
-    _AI_CONFIG = (None, None, None)
-    return _AI_CONFIG
+    # Do not cache a missing configuration; notebooks/services may set env later.
+    return (None, None, None)
 
 
 # ── LLM call ───────────────────────────────────────────────────────────────────
 
+def _extract_llm_text(result: dict) -> str | None:
+    choices = result.get("choices")
+    if isinstance(choices, list) and choices:
+        content = choices[0].get("message", {}).get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [item.get("text", "") for item in content if isinstance(item, dict)]
+            return "".join(parts) or None
+    output_text = result.get("output_text")
+    if isinstance(output_text, str):
+        return output_text
+    return None
+
+
 def call_llm(system_prompt: str, user_content: str,
-             max_tokens: int = 16000, temperature: float = 0.4) -> str | None:
+             max_tokens: int = 16000, temperature: float = 0.4,
+             retries: int = 2, timeout: int = 180) -> str | None:
     """Generic LLM call via urllib. Returns response text or None on failure."""
     api_url, model, api_key = get_ai_config()
     if not api_key or not api_url:
         print("   ⚠ 未配置LLM API "
-              "(设置 LLM_API_KEY + LLM_API_BASE + LLM_MODEL, "
-              "或 DEEPSEEK_API_KEY, 或 GLM_API_KEY)", file=sys.stderr)
+              "(设置 LLM_API_KEY + LLM_API_BASE + LLM_MODEL)", file=sys.stderr)
         return None
 
     if not model:
@@ -95,24 +105,36 @@ def call_llm(system_prompt: str, user_content: str,
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     })
-    try:
-        with urllib.request.urlopen(req, timeout=300) as resp:
-            result = json.loads(resp.read().decode())
-            return result["choices"][0]["message"]["content"]
-    except urllib.error.URLError as e:
-        print(f"   ⚠ LLM 网络错误: {e.reason}", file=sys.stderr)
-        return None
-    except urllib.error.HTTPError as e:
-        body = ""
+    for attempt in range(retries + 1):
         try:
-            body = e.read().decode()[:200]
-        except Exception:
-            pass
-        print(f"   ⚠ LLM HTTP {e.code}: {body}", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"   ⚠ LLM 调用失败: {e}", file=sys.stderr)
-        return None
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read().decode())
+            text = _extract_llm_text(result)
+            if text:
+                return text
+            print("   ⚠ LLM 响应缺少文本内容", file=sys.stderr)
+            return None
+        except urllib.error.HTTPError as e:
+            try:
+                body = e.read().decode(errors="replace")[:500]
+            except Exception:
+                body = ""
+            retryable = e.code == 429 or e.code >= 500
+            print(f"   ⚠ LLM HTTP {e.code}: {body}", file=sys.stderr)
+            if not retryable or attempt >= retries:
+                return None
+        except urllib.error.URLError as e:
+            print(f"   ⚠ LLM 网络错误: {e.reason}", file=sys.stderr)
+            if attempt >= retries:
+                return None
+        except (json.JSONDecodeError, KeyError, TypeError, OSError) as e:
+            print(f"   ⚠ LLM 调用失败: {e}", file=sys.stderr)
+            if attempt >= retries:
+                return None
+        wait = 2 ** attempt
+        print(f"   ↻ {wait}s 后重试 ({attempt + 1}/{retries})")
+        time.sleep(wait)
+    return None
 
 
 # ── JSON parsing ───────────────────────────────────────────────────────────────

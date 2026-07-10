@@ -10,7 +10,8 @@ import sys
 from datetime import datetime
 
 from manju.utils.ai import call_llm, parse_json_response
-from manju.utils.config import count_chinese
+from manju.utils.config import count_content_units
+from manju.utils.runtime import atomic_write_json, available_path, content_fingerprint, read_json, safe_filename
 
 
 # ── Script extraction prompt ────────────────────────────────────────────────────
@@ -90,7 +91,7 @@ def run_adapt(
         return None
 
     title = os.path.splitext(os.path.basename(file_path))[0]
-    word_count = count_chinese(novel_text)
+    word_count = count_content_units(novel_text)
 
     # ── Determine output directory ──────────────────────────────────────────
     if output_dir is None:
@@ -106,24 +107,52 @@ def run_adapt(
     print(f"   输出: {output_dir}")
     print()
 
-    # ── Build prompt and call LLM ───────────────────────────────────────────
-    system_prompt, user_prompt = _build_adapt_prompt(novel_text, title, genre)
+    # ── Chunked adaptation: never discard the ending of a long novel ───────
+    chunk_size = 50_000
+    chunks = [novel_text[i:i + chunk_size] for i in range(0, len(novel_text), chunk_size)]
+    stage_dir = os.path.join(output_dir, "adapt_stages")
+    os.makedirs(stage_dir, exist_ok=True)
+    partials: list[dict] = []
+    print(f"🤖 正在分析小说结构... ({len(chunks)} 个分块)")
+    for index, chunk in enumerate(chunks, 1):
+        fingerprint = content_fingerprint(chunk, genre, "adapt-v2")
+        stage_path = os.path.join(stage_dir, f"chunk_{index:03d}.json")
+        cached = read_json(stage_path)
+        if cached and cached.get("_fingerprint") == fingerprint:
+            cached.pop("_fingerprint", None)
+            partials.append(cached)
+            continue
+        system_prompt, user_prompt = _build_adapt_prompt(
+            chunk, f"{title}（第{index}/{len(chunks)}部分）", genre)
+        response = call_llm(system_prompt, user_prompt, max_tokens=12000)
+        part = parse_json_response(response) if response else None
+        if not isinstance(part, dict) or not isinstance(part.get("scenes"), list):
+            if response:
+                with open(os.path.join(stage_dir, f"chunk_{index:03d}_raw.txt"),
+                          "w", encoding="utf-8") as handle:
+                    handle.write(response)
+            print(f"❌ 小说第 {index} 块改编失败；重试时将复用已完成分块", file=sys.stderr)
+            return None
+        atomic_write_json(stage_path, {**part, "_fingerprint": fingerprint})
+        partials.append(part)
 
-    # For long novels, truncate to fit context (max ~200K chars for LLM)
-    max_chars = 200000
-    if len(novel_text) > max_chars:
-        print(f"   ⚠ 小说过长({len(novel_text)}字符)，截取前{max_chars}字符")
-        user_prompt = user_prompt.replace(novel_text, novel_text[:max_chars])
-
-    print("🤖 正在分析小说结构...")
-    response = call_llm(system_prompt, user_prompt)
-
-    if not response:
-        print("❌ LLM分析失败", file=sys.stderr)
-        return None
-
-    script = parse_json_response(response)
-    if not script:
+    characters: dict[str, dict] = {}
+    scenes: list[dict] = []
+    for part in partials:
+        for character in part.get("characters", []):
+            if isinstance(character, dict) and character.get("name"):
+                characters.setdefault(str(character["name"]), character)
+        scenes.extend(scene for scene in part.get("scenes", []) if isinstance(scene, dict))
+    for index, scene in enumerate(scenes, 1):
+        scene["scene_id"] = index
+    script = {
+        "title": title,
+        "genre": next((part.get("genre") for part in partials if part.get("genre")), genre),
+        "characters": list(characters.values()),
+        "scenes": scenes,
+    }
+    if not scenes:
+        print("❌ 改编结果没有有效场景", file=sys.stderr)
         return None
 
     # ── Add metadata ───────────────────────────────────────────────────────
@@ -132,9 +161,8 @@ def run_adapt(
     script["adaptation_date"] = datetime.now().isoformat()
 
     # ── Save JSON ──────────────────────────────────────────────────────────
-    json_path = os.path.join(output_dir, f"{title}_script.json")
-    with open(json_path, "w", encoding="utf-8") as f:
-        json.dump(script, f, ensure_ascii=False, indent=2)
+    json_path = available_path(os.path.join(output_dir, f"{safe_filename(title, 'novel')}_script.json"))
+    atomic_write_json(json_path, script)
     print(f"   📄 剧本JSON → {json_path}")
 
     # ── Summary ────────────────────────────────────────────────────────────
@@ -150,4 +178,5 @@ def run_adapt(
     print(f"{'═' * 50}")
     print(f"\n下一步: manju storyboard \"{json_path}\"")
 
+    script["_output_path"] = json_path
     return script

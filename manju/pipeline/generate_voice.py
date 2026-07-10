@@ -18,9 +18,12 @@ import shutil
 import subprocess
 import sys
 import urllib.request
+import urllib.error
+import time
 from datetime import datetime
 
 from manju.utils.config import load_manju_env
+from manju.utils.runtime import atomic_write_json, content_fingerprint, join_api_url, read_json, safe_filename
 
 
 # ── Config ─────────────────────────────────────────────────────────────────────
@@ -163,41 +166,38 @@ def _speak_api(
         "response_format": "mp3",
     }
 
-    try:
-        req = urllib.request.Request(
-            f"{cfg['api_base'].rstrip('/')}/v1/audio/speech",
+    req = urllib.request.Request(
+            join_api_url(cfg["api_base"], "audio/speech"),
             data=json.dumps(payload).encode(),
             headers={
                 "Authorization": f"Bearer {cfg['api_key']}",
                 "Content-Type": "application/json",
             },
         )
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            content = resp.read()
-
-        output_dir = os.path.dirname(output_path)
-        if output_dir:
-            os.makedirs(output_dir, exist_ok=True)
-
-        with open(output_path, "wb") as f:
-            f.write(content)
-
-        size_kb = len(content) / 1024
-        return size_kb > 0.5  # TTS output should be >500 bytes
-    except urllib.error.URLError as e:
-        print(f"   ⚠ 语音API网络错误: {e.reason}", file=sys.stderr)
-        return False
-    except urllib.error.HTTPError as e:
-        body = ""
+    for attempt in range(3):
         try:
-            body = e.read().decode()[:200]
-        except Exception:
-            pass
-        print(f"   ⚠ 语音API HTTP {e.code}: {body}", file=sys.stderr)
-        return False
-    except Exception as e:
-        print(f"   ⚠ 语音API失败: {e}", file=sys.stderr)
-        return False
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                content = resp.read()
+            if len(content) <= 500:
+                print("   ⚠ 语音API返回内容过短", file=sys.stderr)
+                return False
+            os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+            with open(output_path, "wb") as f:
+                f.write(content)
+            return True
+        except urllib.error.HTTPError as e:
+            body = e.read().decode(errors="replace")[:500]
+            print(f"   ⚠ 语音API HTTP {e.code}: {body}", file=sys.stderr)
+            if e.code != 429 and e.code < 500:
+                return False
+        except urllib.error.URLError as e:
+            print(f"   ⚠ 语音API网络错误: {e.reason}", file=sys.stderr)
+        except OSError as e:
+            print(f"   ⚠ 语音API失败: {e}", file=sys.stderr)
+            return False
+        if attempt < 2:
+            time.sleep(2 ** attempt)
+    return False
 
 
 # ── Unified speak entry ────────────────────────────────────────────────────────
@@ -233,11 +233,16 @@ def run_speak(
         output_dir = os.path.join(os.getcwd(), "manju-output", today, "voice")
     os.makedirs(output_dir, exist_ok=True)
 
-    safe_name = output_name or re.sub(r'[\\/*?:"<>|]', '_', text[:30]).strip('_')
+    speed = max(0.25, min(float(speed), 4.0))
+    pitch = max(1, min(int(pitch), 10))
+    volume = max(1, min(int(volume), 10))
+    safe_name = safe_filename(output_name or text[:30], "speech")
     output_path = os.path.join(output_dir, f"{safe_name}.mp3")
-
-    # Skip if already exists
-    if os.path.exists(output_path) and os.path.getsize(output_path) > 500:
+    fingerprint = content_fingerprint(text, voice, speed, pitch, volume, cfg.get("backend"), cfg.get("model"))
+    cache_path = f"{output_path}.manju.json"
+    cache = read_json(cache_path)
+    if (cache and cache.get("fingerprint") == fingerprint
+            and os.path.exists(output_path) and os.path.getsize(output_path) > 500):
         print(f"   ⏭ 已存在: {output_path}")
         return output_path
 
@@ -260,6 +265,9 @@ def run_speak(
         ok = _speak_edge_tts(text, output_path, voice=voice, rate=rate, pitch=pitch_str, volume=vol_str)
 
     if ok:
+        atomic_write_json(cache_path, {"fingerprint": fingerprint, "text": text,
+                                      "voice": voice, "speed": speed,
+                                      "pitch": pitch, "volume": volume})
         size_kb = os.path.getsize(output_path) / 1024
         print(f"   ✅ {output_path} ({size_kb:.0f}KB)")
         return output_path
@@ -272,7 +280,8 @@ def run_speak(
 def run_batch_speak(
     voice_scripts: list[dict],
     output_dir: str,
-) -> int:
+    return_paths: bool = False,
+) -> int | dict[str, str]:
     """Generate speech audio for a batch of voice script entries.
 
     Args:
@@ -303,7 +312,7 @@ def run_batch_speak(
     mode = "API" if cfg["backend"] == "api" else "edge-tts"
     print(f"   后端: {mode}")
 
-    success = 0
+    generated: dict[str, str] = {}
     for i, vs in enumerate(speakable):
         shot_id = str(vs.get("shot_id", "?"))
         text = vs["text"]
@@ -311,26 +320,40 @@ def run_batch_speak(
         pitch = int(vs.get("pitch", 5))
         volume = int(vs.get("volume", 5))
 
-        output_path = os.path.join(audio_dir, f"shot_{shot_id.replace('.', '_')}.mp3")
+        output_path = os.path.join(audio_dir, f"shot_{safe_filename(shot_id, 'unknown')}.mp3")
+        selected_voice = (vs.get("voice_api") or "alloy") if cfg["backend"] == "api" \
+            else (vs.get("voice_edge") or DEFAULT_EDGE_VOICE)
+        backend_voice = str(selected_voice)
+        fingerprint = content_fingerprint(text, backend_voice, speed, pitch, volume,
+                                          cfg["backend"], cfg.get("model"))
+        cache_path = f"{output_path}.manju.json"
+        cache = read_json(cache_path)
+        if (cache and cache.get("fingerprint") == fingerprint
+                and os.path.isfile(output_path) and os.path.getsize(output_path) > 500):
+            print("⏭")
+            generated[shot_id] = output_path
+            continue
 
         print(f"   🎙️ [{i+1}/{len(speakable)}] 镜头 {shot_id}: "
               f"\"{text[:30]}{'...' if len(text)>30 else ''}\" ... ", end="", flush=True)
 
         if cfg["backend"] == "api":
-            ok = _speak_api(text, output_path, voice="alloy", speed=speed, cfg=cfg)
+            ok = _speak_api(text, output_path, voice=backend_voice or "alloy", speed=speed, cfg=cfg)
         else:
-            ok = _speak_edge_tts(text, output_path, voice=DEFAULT_EDGE_VOICE,
+            ok = _speak_edge_tts(text, output_path, voice=backend_voice,
                                  rate=f"{'+' if int((speed - 1.0) * 100) >= 0 else ''}{int((speed - 1.0) * 100)}%",
                                  pitch=f"{'+' if (pitch - 5) * 4 >= 0 else ''}{(pitch - 5) * 4}Hz",
                                  volume=f"{'+' if int((volume - 5) / 5 * 50) >= 0 else ''}{int((volume - 5) / 5 * 50)}%")
 
         if ok:
             print("✅")
-            success += 1
+            generated[shot_id] = output_path
+            atomic_write_json(cache_path, {"fingerprint": fingerprint, "text": text,
+                                          "voice": backend_voice})
         else:
             print("❌")
 
-    return success
+    return generated if return_paths else len(generated)
 
 
 # ── Batch generation from file ─────────────────────────────────────────────────
@@ -385,7 +408,7 @@ def run_batch_speak_file(
 
     success = 0
     for i, text in enumerate(lines, start=1):
-        safe_name = re.sub(r'[\\/*?:"<>|]', '_', text[:30]).strip('_')
+        safe_name = f"{i:03d}_{safe_filename(text[:30], 'speech')}_{content_fingerprint(text, length=8)}"
         output_path = os.path.join(output_dir, f"{safe_name}.mp3")
 
         print(f"   🎙️ [{i}/{len(lines)}] \"{text[:40]}{'...' if len(text)>40 else ''}\" ... ",
@@ -409,3 +432,11 @@ def run_batch_speak_file(
             print("❌")
 
     return success
+
+
+def count_batch_lines(file_path: str) -> int:
+    try:
+        with open(file_path, "r", encoding="utf-8") as handle:
+            return sum(1 for line in handle if line.strip() and not line.lstrip().startswith("#"))
+    except (OSError, UnicodeError):
+        return 0

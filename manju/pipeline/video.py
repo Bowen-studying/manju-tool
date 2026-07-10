@@ -1,9 +1,19 @@
-"""Video prompt generation — reads storyboard.json, outputs Seedance 2.0 video prompts."""
+"""Video prompt generation — reads storyboard.json and outputs neutral prompts."""
 
 import json
 import os
 import re
 import sys
+
+from manju.pipeline.storyboard_schema import (
+    duration_label,
+    get_prompt,
+    get_spoken_text,
+    get_style_anchor,
+    get_visual,
+    normalize_storyboard,
+)
+from manju.utils.runtime import atomic_write_json
 
 
 # ── Shot type → duration mapping ──────────────────────────────────────────────
@@ -41,7 +51,7 @@ CAMERA_MOVEMENT_MAP = {
 
 
 def _map_camera(camera_movement: str) -> str:
-    """Map Chinese camera movement to Seedance 2.0 English description."""
+    """Map Chinese camera movement to a neutral English description."""
     if not camera_movement:
         return "static"
     for key, mapping in CAMERA_MOVEMENT_MAP.items():
@@ -90,17 +100,18 @@ def _composition_en(comp: str) -> str:
 # ── Video prompt builder ──────────────────────────────────────────────────────
 
 def _build_video_prompts(shot: dict, style_anchor: str) -> tuple[str, str]:
-    """Build Chinese and English Seedance 2.0 video prompts from a shot.
+    """Build neutral Chinese and English video prompts from a shot.
     
     Returns (prompt_cn, prompt_en).
     """
-    visual = shot.get("visual_description", "")
-    camera = shot.get("camera_movement", "")
+    visual = get_visual(shot, "description")
+    camera = get_visual(shot, "camera_movement")
     camera_en = _map_camera(camera)
-    dialogue = shot.get("dialogue_narration", "")
-    shot_type = shot.get("shot_type", "")
-    composition = shot.get("composition", "")
-    image_cn = shot.get("image_prompt_cn", "")
+    dialogue = get_spoken_text(shot)
+    shot_type = get_visual(shot, "shot_type")
+    composition = get_visual(shot, "composition")
+    image_cn = get_prompt(shot, "image_cn")
+    image_en = get_prompt(shot, "image_en")
 
     # ── Chinese prompt: detailed, readable ──────────────────────────────────
     cn_parts = []
@@ -116,7 +127,7 @@ def _build_video_prompts(shot: dict, style_anchor: str) -> tuple[str, str]:
         cn_parts.append(f"对白：{dialogue}")
     prompt_cn = "；".join(cn_parts)
 
-    # ── English prompt: Seedance format (English only) ──────────────────────
+    # ── English prompt (English only) ───────────────────────────────────────
     en_parts = []
     # Extract English-only from style_anchor: strip CJK + CJK punctuation
     en_style = re.sub(r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+', ' ', style_anchor) if style_anchor else ""
@@ -126,6 +137,8 @@ def _build_video_prompts(shot: dict, style_anchor: str) -> tuple[str, str]:
         en_parts.append(en_style)
     en_parts.append(f"{_shot_type_en(shot_type)}, {_composition_en(composition)}")
     en_parts.append(f"camera: {camera_en}")
+    if image_en:
+        en_parts.append(image_en[:300])
     if visual:
         visual_en = re.sub(r'[\u4e00-\u9fff\u3000-\u303f\uff00-\uffef]+', ' ', visual)
         visual_en = re.sub(r'\s{2,}', ' ', visual_en).strip()
@@ -139,7 +152,7 @@ def _build_video_prompts(shot: dict, style_anchor: str) -> tuple[str, str]:
 
 def _generate_video_prompts(storyboard: dict) -> list[dict]:
     """Generate video prompts for all shots in the storyboard."""
-    style_anchor = storyboard.get("style_anchor", "")
+    style_anchor = get_style_anchor(storyboard)
     video_prompts = []
 
     for scene in storyboard.get("scenes", []):
@@ -148,20 +161,20 @@ def _generate_video_prompts(storyboard: dict) -> list[dict]:
 
         for shot in scene.get("shots", []):
             shot_id = shot.get("shot_id", "?")
-            camera_movement = shot.get("camera_movement", "")
+            camera_movement = get_visual(shot, "camera_movement")
             prompt_cn, prompt_en = _build_video_prompts(shot, style_anchor)
 
             video_prompts.append({
                 "shot_id": shot_id,
                 "scene_id": scene_id,
-                "shot_type": shot.get("shot_type", ""),
-                "composition": shot.get("composition", ""),
-                "duration": _get_duration(shot.get("shot_type", "")),
+                "shot_type": get_visual(shot, "shot_type"),
+                "composition": get_visual(shot, "composition"),
+                "duration": duration_label(shot),
                 "camera_movement_original": camera_movement,
-                "camera_movement_seedance": _map_camera(camera_movement),
-                "seedance_prompt_cn": prompt_cn,
-                "seedance_prompt_en": prompt_en,
-                "dialogue": shot.get("dialogue_narration", ""),
+                "camera_movement_en": _map_camera(camera_movement),
+                "video_prompt_cn": prompt_cn,
+                "video_prompt_en": prompt_en,
+                "dialogue": get_spoken_text(shot),
                 "visual_mood": scene_mood,
             })
 
@@ -183,9 +196,9 @@ def _generate_video_markdown(video_prompts: list[dict], title: str) -> str:
         shot_type = vp.get("shot_type", "")
         duration = vp.get("duration", "")
         camera_orig = vp.get("camera_movement_original", "")
-        camera_sd = vp.get("camera_movement_seedance", "")
-        prompt_cn = vp.get("seedance_prompt_cn", "")
-        prompt_en = vp.get("seedance_prompt_en", "")
+        camera_en = vp.get("camera_movement_en", "")
+        prompt_cn = vp.get("video_prompt_cn", "")
+        prompt_en = vp.get("video_prompt_en", "")
         dialogue = vp.get("dialogue", "")
         mood = vp.get("visual_mood", "")
 
@@ -196,7 +209,7 @@ def _generate_video_markdown(video_prompts: list[dict], title: str) -> str:
         lines.append(f"| **景别** | {shot_type} |")
         lines.append(f"| **建议时长** | {duration} |")
         lines.append(f"| **原始运镜** | {camera_orig} |")
-        lines.append(f"| **运镜** | {camera_orig} → {camera_sd} |")
+        lines.append(f"| **运镜** | {camera_orig} → {camera_en} |")
         if mood:
             lines.append(f"| **氛围** | {mood} |")
         lines.append("")
@@ -226,6 +239,7 @@ def _generate_video_markdown(video_prompts: list[dict], title: str) -> str:
 def run_video(
     storyboard_path: str,
     output_dir: str | None = None,
+    strict_exports: bool = False,
 ) -> list[dict] | None:
     """Generate video prompts from storyboard JSON.
 
@@ -244,6 +258,7 @@ def run_video(
         print(f"❌ 读取 storyboard.json 失败: {e}", file=sys.stderr)
         return None
 
+    storyboard = normalize_storyboard(storyboard)
     title = storyboard.get("title", "未命名")
 
     # ── Determine output directory ────────────────────────────────────────────
@@ -261,13 +276,21 @@ def run_video(
 
     # ── Generate video prompts ────────────────────────────────────────────────
     video_prompts = _generate_video_prompts(storyboard)
+    prompt_map = {str(item.get("shot_id", "")): item for item in video_prompts}
+    for scene in storyboard.get("scenes", []):
+        for shot in scene.get("shots", []):
+            generated = prompt_map.get(str(shot.get("shot_id", "")))
+            if generated:
+                shot.setdefault("prompts", {})["video_cn"] = generated["video_prompt_cn"]
+                shot.setdefault("prompts", {})["video_en"] = generated["video_prompt_en"]
+    atomic_write_json(storyboard_path, storyboard)
 
     # ── Save JSON (internal) ────────────────────────────────────────────────────
     json_path = os.path.join(output_dir, "video_prompts.json")
     with open(json_path, "w", encoding="utf-8") as f:
         json.dump({
             "title": title,
-            "style_anchor": storyboard.get("style_anchor", ""),
+            "style_anchor": get_style_anchor(storyboard),
             "total_shots": len(video_prompts),
             "shots": video_prompts,
         }, f, ensure_ascii=False, indent=2)
@@ -280,6 +303,8 @@ def run_video(
         print(f"   📕 video_prompts.pdf → {pdf_path}")
     except Exception as e:
         print(f"   ⚠ PDF: {e}")
+        if strict_exports:
+            return None
 
     # ── Save Markdown ─────────────────────────────────────────────────────
     md_path = os.path.join(output_dir, "video_prompts.md")

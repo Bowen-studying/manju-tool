@@ -20,14 +20,19 @@ def load_manju_env() -> dict:
 
     env_file = os.path.join(os.path.expanduser("~"), ".manju.env")
     try:
-        with open(env_file) as f:
+        with open(env_file, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line and not line.startswith("#") and "=" in line:
+                    if line.startswith("export "):
+                        line = line[7:].lstrip()
                     key, _, val = line.partition("=")
                     key = key.strip()
                     if key not in env_keys:
-                        env_keys[key] = val.strip()
+                        val = val.strip()
+                        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+                            val = val[1:-1]
+                        env_keys[key] = val
     except FileNotFoundError:
         pass
     except Exception as e:
@@ -39,3 +44,10 @@ def load_manju_env() -> dict:
 def count_chinese(text: str) -> int:
     """Count Chinese characters in a string."""
     return sum(1 for c in text if '一' <= c <= '鿿')
+
+
+def count_content_units(text: str) -> int:
+    """Estimate content length for Chinese, Latin text, and structured JSON."""
+    chinese = count_chinese(text)
+    non_chinese = sum(1 for c in text if not ('一' <= c <= '鿿') and not c.isspace())
+    return chinese + (non_chinese + 3) // 4
