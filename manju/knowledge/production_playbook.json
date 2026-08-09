@@ -1,0 +1,104 @@
+{
+  "version": "1.0",
+  "source_policy": "Curated provider-neutral rules only; private source notes are not distributed.",
+  "sections": [
+    {
+      "section_id": "story_foundation",
+      "level": "advisory",
+      "tags": ["script", "storyboard", "review"],
+      "rules": [
+        "Keep the core conflict, character motivation, causal order, dialogue intent and ending constraint visible across adaptation.",
+        "Use opening hooks, turning points, emotional peaks and ending hooks as rhythm landmarks, not fixed timing formulas.",
+        "Externalize emotion enough to remain legible on a small vertical screen."
+      ]
+    },
+    {
+      "section_id": "storyboard_execution",
+      "level": "hard_gate",
+      "tags": ["storyboard", "image_plan", "review"],
+      "rules": [
+        "Every generated shot must map to a valid storyboard shot and preserve its visible characters, key action, location state and required prop facts.",
+        "Split incompatible simultaneous actions into executable shots and preserve declared temporal and spatial relations.",
+        "Continuity and editability take priority over spectacle."
+      ]
+    },
+    {
+      "section_id": "foundation_lock",
+      "level": "hard_gate",
+      "tags": ["image_plan", "foundation", "approval"],
+      "rules": [
+        "Approve a style board, character identities, character turnarounds, required expression or pose sheets, location masters and key props before batch shot generation.",
+        "Locked assets are immutable. Revisions create a new version with a change note.",
+        "Paid foundation work and every scene group require a current human approval bound to the current state fingerprint."
+      ]
+    },
+    {
+      "section_id": "character_assets",
+      "level": "hard_gate",
+      "tags": ["foundation", "character", "prompt", "vision_review"],
+      "rules": [
+        "Character identity anchors include face, hair, body proportions, costume, accessories and distinctive marks.",
+        "A turnaround shows consistent front, side and back views.",
+        "Only characters declared visible by the storyboard may be required in-frame; off-screen mentions do not imply visibility."
+      ]
+    },
+    {
+      "section_id": "location_assets",
+      "level": "hard_gate",
+      "tags": ["foundation", "location", "prompt", "vision_review"],
+      "rules": [
+        "A location master defines spatial layout, materials, identifying objects and foreground, midground and background layers.",
+        "Create only the time-of-day or lighting variants required by the storyboard.",
+        "Shot composition must not contradict locked entrances, exits, relative positions or light direction without an explicit story reason."
+      ]
+    },
+    {
+      "section_id": "prompt_compilation",
+      "level": "advisory",
+      "tags": ["prompt", "foundation", "shot_generation"],
+      "rules": [
+        "Compile prompts from subject, action, environment, light and color, camera and framing, style and material quality.",
+        "Place unambiguous required elements early and carry the same concise style and identity anchors throughout the project.",
+        "Use general negative constraints plus targeted constraints derived from current evidence."
+      ]
+    },
+    {
+      "section_id": "visual_review",
+      "level": "hard_gate",
+      "tags": ["vision_review", "review", "shot_generation"],
+      "rules": [
+        "Blocking visual findings cite a real locked asset or storyboard JSON path and the inspected image.",
+        "Missing or corrupt files, stale approvals and identifier mismatches cannot be overridden.",
+        "Semantic visual findings may be human-overridden only with a recorded reason; subjective camera, color and style preferences remain advisory."
+      ]
+    },
+    {
+      "section_id": "sound_video_edit",
+      "level": "advisory",
+      "tags": ["video", "voice", "sound", "edit", "delivery"],
+      "rules": [
+        "Describe camera motion with start and end states and preserve shot continuity into video generation.",
+        "Keep dialogue, ambience, effects and music in separate concerns; music should not mask speech.",
+        "Transitions, pacing and delivery exports are reviewed only after upstream assets are locked."
+      ]
+    },
+    {
+      "section_id": "asset_delivery",
+      "level": "hard_gate",
+      "tags": ["foundation", "shot_generation", "delivery", "approval"],
+      "rules": [
+        "Never overwrite an accepted version; filenames and manifests carry stable IDs, versions and fingerprints.",
+        "Keep prior candidates, review evidence, approval history and change notes.",
+        "Do not store credentials in state, traces, tests or deliverables."
+      ]
+    }
+  ],
+  "excluded_topics": [
+    "pricing and sales channels",
+    "platform promotion and vendor marketing claims",
+    "celebrity or living-director imitation",
+    "fixed color symbolism presented as universal truth",
+    "unsupported accuracy percentages",
+    "provider-specific defaults presented as universal rules"
+  ]
+}

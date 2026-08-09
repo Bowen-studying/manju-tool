@@ -9,6 +9,7 @@ import mimetypes
 import os
 import re
 import tempfile
+import time
 from datetime import datetime
 from typing import Any
 
@@ -88,7 +89,22 @@ def atomic_write_json(path: str, value: Any) -> None:
             json.dump(value, handle, ensure_ascii=False, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(temporary, path)
+        delay = 0.005
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                break
+            except OSError as exc:
+                retryable = bool(
+                    isinstance(exc, PermissionError)
+                    or getattr(exc, "winerror", None) in {5, 32}
+                )
+                if not retryable or attempt == 7:
+                    raise
+                # Windows can briefly deny replacement while a read-only
+                # observer still has the prior JSON projection open.
+                time.sleep(delay)
+                delay = min(0.05, delay * 2)
     except Exception:
         try:
             os.unlink(temporary)

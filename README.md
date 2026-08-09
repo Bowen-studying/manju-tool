@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/Version-0.6.0-F59E0B)](#)
 [![License](https://img.shields.io/badge/License-MIT-22C55E)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-42%20passed-14B8A6)](#验证与文档)
+[![Tests](https://img.shields.io/badge/Tests-268%20passed-14B8A6)](#验证与文档)
 
 **适合小说作者、短视频创作者、编剧和 AI 内容制作团队。**
 
@@ -140,6 +140,16 @@ LLM_MODEL=your-model-name
 MANJU_IMAGE_API_KEY=your-key
 MANJU_IMAGE_API_BASE=https://your-api.example.com/v1
 MANJU_IMAGE_MODEL=your-model-name
+MANJU_IMAGE_REFERENCE_MODE=single
+MANJU_IMAGE_MAX_PARALLEL=4
+MANJU_IMAGE_TIMEOUT_SECONDS=300
+MANJU_IMAGE_DOWNLOAD_TIMEOUT_SECONDS=120
+MANJU_IMAGE_ASPECT_MODE=cover
+
+# 图像 Agent 的独立视觉复核；未配置时会暂停并转人工检查
+MANJU_VISION_API_KEY=your-key
+MANJU_VISION_API_BASE=https://your-vision-api.example.com/v1
+MANJU_VISION_MODEL=your-vision-model
 
 # 视频生成：使用 --render-videos 或 generate 时填写
 MANJU_VIDEO_API_KEY=your-key
@@ -275,6 +285,94 @@ manju image "雪山木屋，窗内暖光" --size 1024x768 -n "scene_01"
 manju image --batch "prompts.txt"
 ```
 
+### 图像主管 Agent（审批后生图）
+
+图像 Agent v4 的正常阶段路由由代码状态机决定，不再调用文字模型来选择下一工具。工作流状态
+以 `stages/visual_agent/runs/<run_id>/events.jsonl` 哈希事件链为恢复权威；`state.json`、
+`visual_agent_run.json`、`visual_review.json` 和 `cost_plan.json` 只是可重建投影。`run_id` 是与
+调用参数无关的 UUID，调用合同哈希只用于判断能否续跑，参数不兼容时会创建新 run，旧事件链不覆盖。
+
+图像 Agent 先根据 storyboard v2 规划风格板、人物身份、三视图、必要的表情姿势、场景母版和关键道具。第一次运行只生成计划与审批文件，不会调用生图 API：
+
+```bash
+manju image-agent "storyboard.json" -o "visual_output"
+```
+
+打开 `visual_output/approvals/current.json`，按其中的 `decision_path` 找到本次运行的审批文件，把 `decision` 改为 `approve`。v4 模板已经预填本次 `reviewed_item_ids` 和图片指纹，这些绑定字段应保持原值。基础资产候选锁定阶段还需要在 `selections` 中选择候选 ID。审批文件按 `run_id` 隔离，旧运行不会被新运行误用。之后显式授权已审批范围内的付费调用并续跑：
+
+```bash
+manju image-agent "storyboard.json" -o "visual_output" --resume --image-api
+```
+
+如果主管因明确的语义不确定性进入 `needs_review`，默认续跑不会越过人工门。确认后可审计地恢复：
+
+```bash
+manju image-agent "storyboard.json" -o "visual_output" --resume --image-api \
+  --resume-needs-review --resume-reviewer "导演姓名" \
+  --resume-note "已核对当前分镜、锁定资产和账本，确认可继续。"
+```
+
+该选项只允许恢复主管主动停止；预算、审批拒绝或技术错误仍需解决原始原因。
+
+已有完整图片产物只需重新执行视觉审核时，使用零付费 vision-only 模式：
+
+```bash
+manju image-agent "storyboard.json" -o "visual_output" --recheck-vision --no-image-api
+```
+
+该模式会审核全部场景组后统一汇总。发现 blocking 时状态为 `needs_review`，并写出
+`visual_repair_plan.json`；它不会创建零预算的伪 regenerate 审批，也不会调用生图 API。
+确认 repair plan 后，先创建精确到 blocking 镜头的新成本审批：
+
+```bash
+manju image-agent "storyboard.json" -o "visual_output" \
+  --repair-vision-blockers --no-image-api
+```
+
+人工填写当前审批文件后，再显式授权并续跑同一个 repair run：
+
+```bash
+manju image-agent "storyboard.json" -o "visual_output" \
+  --repair-vision-blockers --image-api
+```
+
+修复模式只重生 repair plan 中的镜头，每个场景组使用新 grant；继承账本中的旧 grant
+仅作为历史记录，不能授权新调用。`--recheck-vision` 与 `--repair-vision-blockers` 不能同时使用。
+修复后的视觉复审若仍有 blocking，不提供普通人工覆盖入口，而以 `vision_repair_blocked`
+结束；系统将旧计划归档到 `repair_history`，并按当前真实 blocking 镜头生成新的 proposed plan。
+下一轮 `--repair-vision-blockers` 会创建新的 run 和成本审批，必须使用新的 grant。定向修订会把
+上一版镜头作为主编辑参考，锁定资产只作为辅助参考，避免重生成时破坏未涉及区域。
+相邻镜头成片会作为时序连续性辅助参考，用于保持人物、道具、场景和动作状态；不会取代当前
+失败镜头的主编辑参考。`counters.model_calls` 和 `counters.tool_steps` 是跨 run 累计审计值，
+每个新 recheck/repair 使用独立的 `run_budget_usage` 执行预算门禁。视觉复核若因预算或技术原因
+未完成，repair plan 标为 `verification_incomplete` 且不可审批，不会输出空计划或沿用旧 blocker。
+
+既有完成结果若只缺少修订 provenance，可纯本地回填，不重新复审或生图：
+
+```bash
+manju image-agent "storyboard.json" -o "visual_output" \
+  --reconcile-metadata --no-image-api
+```
+
+该模式只根据当前 state、图片 sidecar 和 `assets/reference_boards` 中的 targeted revision
+manifest 回填 `previous_shot_reference_*`、`revision_reference_board` 和 `temporal_context_*`。
+它不调用主管、视觉或图像 API，不修改质量门禁、累计调用计数或付费账本，并且不能与
+`--recheck-vision`、`--repair-vision-blockers` 或 `--image-api` 同时使用。
+
+既有运行升级、付费产物收口，或删除兼容投影后的纯本地重建，使用：
+
+```bash
+manju image-agent "storyboard.json" -o "visual_output" \
+  --reconcile-paid-artifacts --no-image-api
+```
+
+该命令优先从当前 run 的事件链恢复，并以付费账本核对授权和用量；模型、视觉和生图调用均为
+零。事件链校验失败会直接停止，不会退回读取投影或猜测状态。
+
+每项基础资产默认生成 3 个候选，视觉模型只排序，最终锁定由人决定。共享同一组锁定参考的候选、同场景组镜头和定向重生默认最多 4 路并行；资产依赖、审批、锁版和复核仍按顺序执行。每个付费任务会在调用前写入 run 专属账本并扣减审批额度，单张完成即提交，恢复时接管已写盘文件；失败后的新调用必须重新审批。每个镜头只引用实际出镜人物、该场景母版和该镜关键道具；单参考供应商的本地参考板会完整保留这些引用，不再静默截断。可用 `MANJU_IMAGE_MAX_PARALLEL` 或 `--image-parallelism` 在 1–16 之间调整。
+
+`--size auto` 会根据 storyboard 画幅，从 `MANJU_IMAGE_SUPPORTED_SIZES` 中选择最接近的供应商请求尺寸。供应商若仍返回其他比例，默认 `cover` 居中裁切以避免填充带；也可选择 `contain_blur` 或 `strict`。原始尺寸、最终尺寸和处理方式写入图片旁的 `.manju.json`。基础资产锁定后按场景组逐批审批；所有审批必须包含审核人、完整审核项和当前图片指纹，`auto`/`ok` 等占位内容无效。每组最多自动修正一次。没有视觉 API 时必须经过人工语义确认，最终 `visual_agent_run.json` 会明确记录 `completed_with_manual_override` 和 `quality_gate`，不会伪装成视觉模型验收。退出码 `3` 表示等待审批，`2` 表示需要人工质量判断。等待或复核期间 pipeline 不会进入配音和视频。
+
 ### 直接生成视频片段
 
 ```bash
@@ -355,6 +453,12 @@ manju speak "快跑！" --speed 1.4 --pitch 7 --volume 8
 | `-o 路径` | 指定输出文件夹 |
 | `--resume` | 复用已完成阶段和未变化素材 |
 | `--max-scenes 数量` | 指定目标场景数 |
+| `--engine workflow` | 使用冻结的 LangGraph v6 固定流程，便于对照 |
+| `--engine agent` | 使用主管 Agent 自主选择分镜工具，并保存 SQLite 检查点与行动轨迹 |
+| `--image-engine agent` | 使用审批驱动的图像主管 Agent；默认仍为 `legacy` |
+| `--agent-max-steps 数量` | 主管 Agent 工具步骤预算，默认 40 |
+| `--agent-max-calls auto\|数量` | 主管 Agent 模型调用预算；默认 `auto`，按场景数、分块数和修订闭环计算（通常 20–36），可显式填写更高正整数 |
+| `--agent-max-revisions 数量` | 每场定向修订上限，默认 2 |
 | `--image-api` | 在分镜阶段调用图片生成服务 |
 | `--speak` | 生成配音音频 |
 | `--render-videos` | 按镜头生成视频片段 |
@@ -368,6 +472,14 @@ manju pipeline --help
 manju storyboard --help
 manju image --help
 ```
+
+LangGraph 当前是本地试验引擎，默认仍使用原有 `legacy` 流程。低成本试跑示例：
+
+```bash
+manju storyboard "sample_story.txt" --engine agent --max-scenes 1 -o demo_output
+```
+
+Agent 模式不是固定的“规划→生成→审核”流程。主管模型通过严格 JSON 动作协议选择分析、规划、生成、组合审计或定向修订工具；未知参数会成为可恢复协议错误。Python 强制执行工具白名单、证据有效性、预算和完成条件。原文会形成带稳定 beat ID 的 Source Model，场景和镜头通过 `source_beat_ids`、`visible_character_ids` 与 `temporal_relations` 建立语义关联。模型提出的 blocking 问题必须同时引用有效原文证据和当前 storyboard JSON 路径，否则降为 advisory，不触发自动修订。它会额外生成 `review.json`、`agent_run.json`、`agent_trace.jsonl` 和 `stages/agent/checkpoints.sqlite`。当状态为 `needs_review` 时，分镜文件仍会保存，但 CLI 返回退出码 2，pipeline 会在所有媒体调用前停止。固定 v6 对照流程使用 `--engine workflow`，检查点位于 `stages/workflow/`。相同输入和参数再次使用 `--resume` 时，会从本地检查点恢复。
 
 ---
 
@@ -486,6 +598,16 @@ manju pipeline --novel "小说.txt" -o "D:\我的项目\第一集"
 - 上传内容、隐私声明和输出规范检查
 
 本地验证：
+
+```bash
+uv sync --extra planner --extra test
+uv run pytest -q
+uv run python -m compileall -q manju tests
+```
+
+混合规划与离线渲染的验证依赖 `planner`，测试运行器由 `test` extra 提供；请同时安装两者，避免手动安装未声明的 pytest 版本。
+
+兼容旧环境时仍可运行：
 
 ```bash
 python -m compileall -q manju tests

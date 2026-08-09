@@ -27,6 +27,18 @@ from manju.utils.runtime import atomic_write_json, safe_filename
 OUTPUT_BASE = os.path.join(os.getcwd(), "manju-output")
 
 
+def _parse_agent_max_calls(ctx, param, value):
+    if value is None or str(value).strip().lower() == "auto":
+        return None
+    try:
+        parsed = int(str(value).strip())
+    except ValueError as exc:
+        raise click.BadParameter("must be 'auto' or a positive integer") from exc
+    if parsed < 1:
+        raise click.BadParameter("must be 'auto' or a positive integer")
+    return parsed
+
+
 @click.group()
 def cli():
     """manju-tool: AI 漫剧制作工具 — 从剧本到AI短视频素材。
@@ -139,7 +151,18 @@ def create(title, genre, premise, protagonist, conflict, world_rules,
               help="逐镜生图 (需配置生图API)")
 @click.option("--resume/--no-resume", default=True,
               help="从相同源文件的已完成阶段续跑")
-def storyboard(file, output_dir, max_scenes, image_api, resume):
+@click.option("--engine", type=click.Choice(["legacy", "workflow", "agent"]), default="legacy",
+              show_default=True, help="分镜编排引擎")
+@click.option("--image-engine", type=click.Choice(["legacy", "agent"]), default="legacy",
+              show_default=True, help="图片生成引擎")
+@click.option("--agent-max-steps", type=click.IntRange(min=1), default=40,
+              show_default=True, help="主管 Agent 最多工具步骤")
+@click.option("--agent-max-calls", type=str, default="auto", callback=_parse_agent_max_calls,
+              show_default=True, help="主管 Agent 最多模型调用")
+@click.option("--agent-max-revisions", type=click.IntRange(min=0), default=2,
+              show_default=True, help="主管 Agent 每场最多修订次数")
+def storyboard(file, output_dir, max_scenes, image_api, resume, engine, image_engine,
+               agent_max_steps, agent_max_calls, agent_max_revisions):
     """分镜生成：读取剧本JSON或小说 → LLM生成分镜 → 可选生图。
 
     FILE: 剧本JSON或改编后小说TXT。
@@ -150,9 +173,25 @@ def storyboard(file, output_dir, max_scenes, image_api, resume):
         result = run_storyboard(
             file, output_dir=output_dir,
             max_scenes=max_scenes, image_api=image_api, resume=resume,
-            strict_exports=True,
+            strict_exports=True, engine=engine,
+            image_engine=image_engine,
+            agent_max_steps=agent_max_steps, agent_max_calls=agent_max_calls,
+            agent_max_revisions=agent_max_revisions,
         )
         if result:
+            if result.get("metadata", {}).get("agent_status") == "needs_review":
+                click.echo("\nAgent output needs human review; media stages were not started.", err=True)
+                sys.exit(2)
+            visual_status = result.get("metadata", {}).get("visual_agent_status")
+            if visual_status == "awaiting_approval":
+                click.echo("\n图像 Agent 已暂停，填写 approvals 中的审批文件后使用 --resume 续跑。", err=True)
+                sys.exit(3)
+            if visual_status == "needs_review":
+                click.echo("\n图像 Agent 需要人工质量检查；媒体下游未启动。", err=True)
+                sys.exit(2)
+            if visual_status == "failed":
+                click.echo("\n图像 Agent 运行失败。", err=True)
+                sys.exit(1)
             click.echo(f"\n✅ 分镜完成: {sum(len(s.get('shots', [])) for s in result.get('scenes', []))} 镜")
         else:
             click.echo("\n❌ 分镜生成失败", err=True)
@@ -336,6 +375,278 @@ def image(prompt, image, size, output_dir, name, batch_file):
         sys.exit(1)
 
 
+@cli.command("image-agent")
+@click.argument("storyboard_json", type=click.Path(exists=True))
+@click.option("-o", "--output-dir", default=None,
+              help="输出目录（默认与 storyboard.json 同目录）")
+@click.option("--image-api/--no-image-api", default=False,
+              help="明确授权执行审批范围内的付费生图调用")
+@click.option("--resume/--no-resume", default=True,
+              help="从相同输入、模型和预算的状态续跑")
+@click.option("--resume-needs-review", is_flag=True, default=False,
+              help="经人工检查后，显式恢复主管主动停止的 needs_review 运行")
+@click.option("--resume-reviewer", default="",
+              help="恢复 needs_review 的人工审核人标识")
+@click.option("--resume-note", default="",
+              help="恢复 needs_review 的具体人工判断说明")
+@click.option("--recheck-vision", is_flag=True, default=False,
+              help="仅复核现有镜头图片，不重新生图；必须配合 --no-image-api")
+@click.option("--repair-vision-blockers", is_flag=True, default=False,
+              help="从最近一次完整 vision-only 阻塞结果创建或续跑定向修复")
+@click.option("--reset-foundation-references", is_flag=True, default=False,
+              help="按修复计划准备定向 Foundation 参考重置；本步骤不调用 API")
+@click.option("--prepare-provider-escalation", is_flag=True, default=False,
+              help="从非收敛终态生成单约束 provider escalation 计划；本步骤零 API")
+@click.option("--vision-calibration-file", type=click.Path(exists=True, dir_okay=False),
+              default=None, help="本地人工标注的 vision confidence 校准样本或报告")
+@click.option("--reconcile-metadata", is_flag=True, default=False,
+              help="Backfill local revision provenance without calling any API")
+@click.option("--reconcile-paid-artifacts", is_flag=True, default=False,
+              help="Recover from the event store, rebuild projections, and normalize paid artifacts without any API")
+@click.option("--foundation-candidates", type=click.IntRange(min=1), default=3,
+              show_default=True, help="每项基础资产候选数")
+@click.option("--max-auto-retries", type=click.IntRange(min=0), default=1,
+              show_default=True, help="每个场景组自动修正轮次")
+@click.option("--image-parallelism", type=click.IntRange(min=1, max=16), default=None,
+              help="共享锁定参考的并行生图数（默认读取配置，通常为 4）")
+@click.option("--size", default="auto", show_default=True,
+              help="图片请求尺寸；auto 根据 storyboard 画幅和供应商支持尺寸选择")
+@click.option("--visual-max-steps", type=click.IntRange(min=1), default=None,
+              help="图像主管最多工具步骤（默认自动）")
+@click.option("--visual-max-calls", type=str, default="auto", callback=_parse_agent_max_calls,
+              show_default=True, help="兼容 supervisor 诊断模型调用上限；v4 默认确定性路由为 0")
+def image_agent(storyboard_json, output_dir, image_api, resume,
+                 resume_needs_review, resume_reviewer, resume_note, recheck_vision,
+                 repair_vision_blockers, reset_foundation_references,
+                 prepare_provider_escalation, vision_calibration_file,
+                 reconcile_metadata, reconcile_paid_artifacts,
+                 foundation_candidates, max_auto_retries, image_parallelism, size,
+                visual_max_steps, visual_max_calls):
+    """审批驱动的图像主管 Agent：基础资产锁定后按场景组生图。"""
+    from manju.pipeline.visual_agent import (
+        prepare_provider_escalation as prepare_provider_escalation_run,
+        reconcile_paid_artifacts as reconcile_paid_artifacts_run,
+        reconcile_visual_metadata,
+        run_image_agent,
+    )
+
+    if prepare_provider_escalation:
+        if (
+            image_api or not resume or recheck_vision or repair_vision_blockers
+            or reset_foundation_references or reconcile_metadata or reconcile_paid_artifacts
+        ):
+            raise click.ClickException(
+                "provider escalation preparation requires --resume --no-image-api and cannot "
+                "be combined with reconcile, recheck, repair, or Foundation reset modes"
+            )
+        try:
+            result = prepare_provider_escalation_run(
+                storyboard_json, output_dir=output_dir
+            )
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if reconcile_metadata or reconcile_paid_artifacts:
+        if image_api or recheck_vision or repair_vision_blockers or reset_foundation_references:
+            raise click.ClickException(
+                "reconcile mode requires --no-image-api and cannot be combined "
+                "with vision recheck or repair"
+            )
+        if reconcile_metadata and reconcile_paid_artifacts:
+            raise click.ClickException("select only one reconcile mode")
+        try:
+            result = (
+                reconcile_paid_artifacts_run(storyboard_json, output_dir=output_dir)
+                if reconcile_paid_artifacts else
+                reconcile_visual_metadata(storyboard_json, output_dir=output_dir)
+            )
+        except Exception as exc:
+            raise click.ClickException(str(exc)) from exc
+        click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+        if reconcile_metadata and result.get("status") != "completed":
+            raise click.exceptions.Exit(2)
+        return
+    try:
+        manifest = run_image_agent(
+            storyboard_json, output_dir=output_dir, execute_paid_calls=image_api,
+            resume=resume, resume_needs_review=resume_needs_review,
+            resume_reviewer=resume_reviewer, resume_note=resume_note,
+            recheck_vision=recheck_vision,
+            repair_vision_blockers=repair_vision_blockers,
+            reset_foundation_references=reset_foundation_references,
+            foundation_candidates=foundation_candidates,
+            max_auto_retries=max_auto_retries, size=size,
+            image_parallelism=image_parallelism,
+            vision_calibration_file=vision_calibration_file,
+            max_steps=visual_max_steps, max_calls=visual_max_calls,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    status = manifest.get("status")
+    click.echo(f"图像 Agent 状态: {status} ({manifest.get('stop_reason', '')})")
+    if status == "completed":
+        return
+    if status == "awaiting_approval":
+        click.echo("填写输出目录 approvals 中当前 decision.json，然后使用 --resume 续跑。", err=True)
+        raise click.exceptions.Exit(3)
+    if status == "needs_review":
+        raise click.exceptions.Exit(2)
+    raise click.exceptions.Exit(1)
+
+
+@cli.command("hybrid-render")
+@click.argument("scene_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("-o", "--output-dir", required=True, type=click.Path(file_okay=False),
+              help="混合渲染产物目录；不会调用任何模型或外部 API")
+def hybrid_render(scene_json, output_dir):
+    """离线合成 v4.1 图层场景，并校验尺寸、方向、数量和保护区。"""
+    from manju.pipeline.visual.hybrid import render_hybrid_scene_file
+
+    try:
+        manifest = render_hybrid_scene_file(scene_json, output_dir)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(manifest, ensure_ascii=False, indent=2))
+    if manifest["status"] != "auto_verified":
+        raise click.exceptions.Exit(2)
+
+
+@cli.command("hybrid-approve")
+@click.argument("output_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--reviewer", required=True, help="人工复核人标识")
+@click.option("--note", required=True, help="具体复核结论")
+@click.option("--run-id", default=None, help="默认使用当前 hybrid run")
+def hybrid_approve(output_dir, reviewer, note, run_id):
+    """签核已通过硬校验但需要人工复核的 hybrid 渲染。"""
+    from manju.pipeline.visual.hybrid import record_hybrid_human_verification
+
+    try:
+        verification = record_hybrid_human_verification(
+            output_dir, reviewer=reviewer, note=note, run_id=run_id,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(verification, ensure_ascii=False, indent=2))
+
+
+@cli.command("hybrid-asset-inspect")
+@click.argument("image_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--asset-id", required=True)
+@click.option("--revision", required=True)
+@click.option("--asset-type", required=True)
+@click.option("--source-kind", type=click.Choice(["provider", "local", "fixture"]), default="provider", show_default=True)
+@click.option("--technical-requirements-json", help="可选技术要求 JSON；仅记录和校验本地素材，不调用 provider")
+@click.option("--derivation-json", help="可选派生谱系 JSON；必须含可校验的 parent_image_path 和哈希")
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False))
+def hybrid_asset_inspect(image_path, asset_id, revision, asset_type, source_kind, technical_requirements_json, derivation_json, output):
+    """Inspect an existing local asset; this command never calls a provider."""
+    from manju.pipeline.visual.asset_intake import inspect_asset_candidate
+
+    try:
+        technical_requirements = json.loads(technical_requirements_json) if technical_requirements_json else None
+        derivation = json.loads(derivation_json) if derivation_json else None
+        report = inspect_asset_candidate(
+            image_path, output, asset_id=asset_id, revision=revision,
+            asset_type=asset_type, source_kind=source_kind,
+            technical_requirements=technical_requirements, derivation=derivation,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+@cli.command("hybrid-asset-promote")
+@click.argument("candidate_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--reviewer", required=True)
+@click.option("--note", required=True)
+@click.option("-o", "--output", required=True, type=click.Path(dir_okay=False))
+def hybrid_asset_promote(candidate_json, reviewer, note, output):
+    """Sign a reviewed asset inspection for provider use; no provider is called."""
+    from manju.pipeline.visual.asset_intake import promote_asset_candidate
+
+    try:
+        promotion = promote_asset_candidate(candidate_json, output, reviewer=reviewer, note=note)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(promotion, ensure_ascii=False, indent=2))
+
+
+@cli.command("hybrid-plan")
+@click.argument("storyboard_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--assets", "asset_registry_json", required=True, type=click.Path(exists=True, dir_okay=False),
+              help="版本化资产注册表；只读取其中声明的资产根目录")
+@click.option("-o", "--output-dir", required=True, type=click.Path(file_okay=False),
+              help="新的不可变规划产物目录；不会调用模型或外部 API")
+@click.option("--allow-fixtures", is_flag=True, default=False,
+              help="仅允许显式标记为 fixture 的本地测试素材参与规划")
+@click.option("--timeout-seconds", type=click.FloatRange(min=0.01, max=5.0), default=5.0,
+              show_default=True, help="每镜头本地确定性求解的硬超时")
+def hybrid_plan(storyboard_json, asset_registry_json, output_dir, allow_fixtures, timeout_seconds):
+    """离线将结构化 storyboard 规划为可审计的 hybrid scene JSON。"""
+    from manju.pipeline.visual.planner import plan_hybrid_storyboard_file
+
+    try:
+        result = plan_hybrid_storyboard_file(
+            storyboard_json, asset_registry_json, output_dir,
+            allow_fixtures=allow_fixtures, timeout_seconds=timeout_seconds,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(result["manifest"], ensure_ascii=False, indent=2))
+    if result["plan"]["status"] != "ready":
+        raise click.exceptions.Exit(2)
+
+
+@cli.command("hybrid-plan-verify")
+@click.argument("output_dir", type=click.Path(exists=True, file_okay=False))
+def hybrid_plan_verify(output_dir):
+    """校验规划文件、scene JSON 和不可变内容指纹链。"""
+    from manju.pipeline.visual.planner import verify_hybrid_plan
+
+    try:
+        result = verify_hybrid_plan(output_dir)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@cli.command("hybrid-plan-approve")
+@click.argument("output_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--reviewer", required=True, help="人工复核人标识")
+@click.option("--note", required=True, help="具体的构图复核结论")
+def hybrid_plan_approve(output_dir, reviewer, note):
+    """签核高风险模型软建议参与的离线规划。"""
+    from manju.pipeline.visual.planner import record_hybrid_plan_human_verification
+
+    try:
+        result = record_hybrid_plan_human_verification(
+            output_dir, reviewer=reviewer, note=note,
+        )
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(result, ensure_ascii=False, indent=2))
+
+
+@cli.command("hybrid-plan-replan")
+@click.argument("plan_dir", type=click.Path(exists=True, file_okay=False))
+@click.argument("render_output_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("-o", "--output-dir", required=True, type=click.Path(file_okay=False),
+              help="新的不可变重排计划目录；最多三个连续重排版本")
+def hybrid_plan_replan(plan_dir, render_output_dir, output_dir):
+    """根据已记录的本地像素可见性失败创建一次软布局重排。"""
+    from manju.pipeline.visual.planner import replan_hybrid_plan_from_render
+
+    try:
+        result = replan_hybrid_plan_from_render(plan_dir, render_output_dir, output_dir)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(json.dumps(result["manifest"], ensure_ascii=False, indent=2))
+    if result["plan"]["status"] != "ready":
+        raise click.exceptions.Exit(2)
+
+
 # ── 配音生成 ──────────────────────────────────────────────────────────────────
 
 @cli.command("speak")
@@ -424,8 +735,19 @@ def speak(text, voice, speed, pitch, volume, output_dir, name, batch_file):
               help="续跑相同输入的分镜阶段与素材缓存")
 @click.option("--max-scenes", type=int, default=None,
               help="目标场景数（1-8）")
+@click.option("--engine", type=click.Choice(["legacy", "workflow", "agent"]), default="legacy",
+              show_default=True, help="分镜编排引擎")
+@click.option("--image-engine", type=click.Choice(["legacy", "agent"]), default="legacy",
+              show_default=True, help="图片生成引擎")
+@click.option("--agent-max-steps", type=click.IntRange(min=1), default=40,
+              show_default=True, help="主管 Agent 最多工具步骤")
+@click.option("--agent-max-calls", type=str, default="auto", callback=_parse_agent_max_calls,
+              show_default=True, help="主管 Agent 最多模型调用")
+@click.option("--agent-max-revisions", type=click.IntRange(min=0), default=2,
+              show_default=True, help="主管 Agent 每场最多修订次数")
 def pipeline(script_path, storyboard_json, novel, genre, output_dir, do_storyboard,
-             do_video, do_voice, do_speak, image_api, render_videos, resume, max_scenes):
+             do_video, do_voice, do_speak, image_api, render_videos, resume, max_scenes,
+             engine, image_engine, agent_max_steps, agent_max_calls, agent_max_revisions):
     """一键全流程：剧本 → 分镜 → 配音 → 视频提示词。
 
     三种启动方式：
@@ -481,11 +803,27 @@ def pipeline(script_path, storyboard_json, novel, genre, output_dir, do_storyboa
         click.echo(f"\n🎬 生成分镜...")
         sb_dir = os.path.join(out_dir, "storyboard")
         result = run_storyboard(script_file, output_dir=sb_dir,
-                                max_scenes=max_scenes, image_api=image_api,
-                                resume=resume, strict_exports=True)
+                                 max_scenes=max_scenes, image_api=image_api,
+                                 resume=resume, strict_exports=True, engine=engine,
+                                 image_engine=image_engine,
+                                 agent_max_steps=agent_max_steps,
+                                agent_max_calls=agent_max_calls,
+                                agent_max_revisions=agent_max_revisions)
         if not result:
             click.echo("❌ 分镜生成失败", err=True)
             sys.exit(1)
+        if result.get("metadata", {}).get("agent_status") == "needs_review":
+            click.echo("Agent output needs human review; pipeline stopped before all media stages.", err=True)
+            raise click.exceptions.Exit(2)
+        visual_status = result.get("metadata", {}).get("visual_agent_status")
+        if visual_status == "awaiting_approval":
+            click.echo("图像 Agent 等待审批；pipeline 已在配音和视频之前停止。", err=True)
+            raise click.exceptions.Exit(3)
+        if visual_status == "needs_review":
+            click.echo("图像 Agent 需要人工检查；pipeline 已在配音和视频之前停止。", err=True)
+            raise click.exceptions.Exit(2)
+        if visual_status == "failed":
+            raise click.ClickException("图像 Agent 失败")
         storyboard_file = os.path.join(sb_dir, "storyboard.json")
     else:
         # Find existing storyboard
@@ -501,6 +839,29 @@ def pipeline(script_path, storyboard_json, novel, genre, output_dir, do_storyboa
         raise click.ClickException("没有可用的 storyboard.json；请启用分镜生成或使用 --storyboard-json")
     else:
         # ── Step 2: Voice ─────────────────────────────────────────────────
+        try:
+            with open(storyboard_file, encoding="utf-8") as handle:
+                existing_storyboard = json.load(handle)
+        except (OSError, ValueError, TypeError):
+            existing_storyboard = {}
+        if existing_storyboard.get("metadata", {}).get("agent_status") == "needs_review":
+            click.echo("Agent output needs human review; pipeline stopped before all media stages.", err=True)
+            raise click.exceptions.Exit(2)
+        if storyboard_json and image_engine == "agent":
+            from manju.pipeline.visual_agent import run_image_agent
+
+            visual_manifest = run_image_agent(
+                storyboard_file, output_dir=sb_dir,
+                execute_paid_calls=image_api, resume=resume,
+            )
+            if visual_manifest.get("status") == "awaiting_approval":
+                click.echo("图像 Agent 等待审批；pipeline 已在配音和视频之前停止。", err=True)
+                raise click.exceptions.Exit(3)
+            if visual_manifest.get("status") == "needs_review":
+                click.echo("图像 Agent 需要人工检查；pipeline 已在配音和视频之前停止。", err=True)
+                raise click.exceptions.Exit(2)
+            if visual_manifest.get("status") != "completed":
+                raise click.ClickException("图像 Agent 失败")
         if do_voice:
             click.echo(f"\n🎙 生成配音脚本...")
             voice_result = run_voice(storyboard_file, output_dir=out_dir, strict_exports=True)

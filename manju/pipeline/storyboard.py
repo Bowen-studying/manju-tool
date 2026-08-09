@@ -24,7 +24,7 @@ from manju.pipeline.storyboard_schema import (
 from manju.pipeline.storyboard_stages import generate_storyboard_staged
 from manju.utils.config import count_content_units
 from manju.utils.formats import write_xlsx
-from manju.utils.runtime import atomic_write_json, content_fingerprint, safe_filename
+from manju.utils.runtime import atomic_write_json, content_fingerprint, read_json, safe_filename
 
 
 def _extract_title(file_path: str) -> str:
@@ -192,8 +192,17 @@ def run_storyboard(
     output_base: str = "",
     resume: bool = True,
     strict_exports: bool = False,
+    engine: str = "legacy",
+    image_engine: str = "legacy",
+    agent_max_steps: int = 40,
+    agent_max_calls: int | None = None,
+    agent_max_revisions: int = 2,
 ) -> dict | None:
     """Generate storyboard v2 via plan -> per-scene shots -> validation."""
+    if engine not in {"legacy", "workflow", "agent"}:
+        raise ValueError("engine must be 'legacy', 'workflow', or 'agent'")
+    if image_engine not in {"legacy", "agent"}:
+        raise ValueError("image_engine must be 'legacy' or 'agent'")
     source = _read_story_source(file_path)
     if source is None:
         return None
@@ -217,24 +226,87 @@ def run_storyboard(
     print("\n🎬 多阶段生成分镜脚本中...")
     sys.stdout.flush()
 
-    storyboard = generate_storyboard_staged(
-        _clean_text(raw_text),
-        title,
-        word_count,
-        target_scenes,
-        os.path.join(storyboard_dir, "stages"),
-        resume=resume,
-    )
+    cleaned_text = _clean_text(raw_text)
+    agent_manifest: dict = {}
+    if engine == "workflow":
+        try:
+            from manju.pipeline.storyboard_agent import generate_storyboard_workflow
+        except ImportError:
+            print(
+                "Workflow engine is unavailable. Install langgraph and "
+                "langgraph-checkpoint-sqlite.",
+                file=sys.stderr,
+            )
+            return None
+        print("   Frozen LangGraph workflow engine enabled")
+        storyboard = generate_storyboard_workflow(
+            cleaned_text,
+            title,
+            word_count,
+            target_scenes,
+            os.path.join(storyboard_dir, "stages", "workflow"),
+            storyboard_dir,
+            resume=resume,
+            max_revisions=agent_max_revisions,
+        )
+    elif engine == "agent":
+        try:
+            from manju.pipeline.storyboard_supervisor import generate_storyboard_agent
+        except ImportError:
+            print(
+                "Supervisor Agent is unavailable. Install langgraph and "
+                "langgraph-checkpoint-sqlite.",
+                file=sys.stderr,
+            )
+            return None
+        print("   LangGraph supervisor Agent enabled")
+        storyboard = generate_storyboard_agent(
+            cleaned_text,
+            title,
+            word_count,
+            target_scenes,
+            os.path.join(storyboard_dir, "stages", "agent"),
+            storyboard_dir,
+            resume=resume,
+            max_steps=agent_max_steps,
+            max_calls=agent_max_calls,
+            max_revisions=agent_max_revisions,
+        )
+        manifest_value = read_json(os.path.join(storyboard_dir, "agent_run.json"))
+        agent_manifest = manifest_value if isinstance(manifest_value, dict) else {}
+    else:
+        storyboard = generate_storyboard_staged(
+            cleaned_text,
+            title,
+            word_count,
+            target_scenes,
+            os.path.join(storyboard_dir, "stages"),
+            resume=resume,
+        )
     if storyboard is None:
         return None
 
     storyboard = normalize_storyboard(storyboard, title=title, metadata={
-        "source_file": os.path.abspath(file_path),
+        "source_file": os.path.basename(file_path),
         "source_sha256": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
         "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
         "word_count": word_count,
         "target_scene_count": target_scenes,
-        "generation_flow": "plan -> per-scene shots -> normalize/validate",
+        "generation_flow": (
+            "langgraph supervisor: model-selected tools with code-owned completion gates"
+            if engine == "agent"
+            else (
+                "langgraph workflow v6: summarize -> plan -> per-scene shots -> review/revise"
+                if engine == "workflow"
+                else "plan -> per-scene shots -> normalize/validate"
+            )
+        ),
+        "generation_engine": engine,
+        **({
+            "agent_status": agent_manifest.get("status", "unknown"),
+            "agent_stop_reason": agent_manifest.get("stop_reason", ""),
+            "agent_verification_state": agent_manifest.get("verification_state", "not_audited"),
+        } if engine == "agent" and agent_manifest else {}),
     })
     total_scenes = len(storyboard["scenes"])
     total_shots = sum(len(scene.get("shots", [])) for scene in storyboard["scenes"])
@@ -257,10 +329,36 @@ def run_storyboard(
         handle.write(_generate_markdown(storyboard))
     print(f"   📝 storyboard.md  → {md_path}")
 
-    if image_api:
+    agent_needs_review = engine == "agent" and agent_manifest.get("status") == "needs_review"
+    visual_manifest: dict = {}
+    if image_engine == "agent" and not agent_needs_review:
+        from manju.pipeline.visual_agent import run_image_agent
+
+        visual_manifest = run_image_agent(
+            json_path, output_dir=storyboard_dir,
+            execute_paid_calls=image_api, resume=resume,
+        )
+        storyboard.setdefault("metadata", {})["visual_agent_status"] = visual_manifest.get("status", "unknown")
+        storyboard["metadata"]["visual_agent_stop_reason"] = visual_manifest.get("stop_reason", "")
+        latest_storyboard = read_json(json_path)
+        if visual_manifest.get("status") == "completed" and isinstance(latest_storyboard, dict):
+            storyboard = latest_storyboard
+            storyboard.setdefault("metadata", {})["visual_agent_status"] = "completed"
+            storyboard["metadata"]["visual_agent_stop_reason"] = "completed"
+        atomic_write_json(json_path, storyboard)
+    elif image_api and image_engine == "legacy" and not agent_needs_review:
         image_count = _generate_images_from_storyboard(storyboard, storyboard_dir)
         print(f"   🖼️  生图完成: {image_count}/{total_shots} 张")
         atomic_write_json(json_path, storyboard)
+    elif image_api and agent_needs_review:
+        print("   Agent output needs review; image API call was skipped.", file=sys.stderr)
+
+    if agent_needs_review:
+        print(
+            "Agent saved the current storyboard, but human review is required before media stages "
+            f"(reason: {agent_manifest.get('stop_reason', 'unknown')}).",
+            file=sys.stderr,
+        )
 
     print(f"\n{'═' * 50}")
     print("  ✅ 分镜生成完成")

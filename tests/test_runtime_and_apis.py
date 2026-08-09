@@ -15,7 +15,7 @@ from manju.pipeline.storyboard_stages import generate_storyboard_staged
 from manju.pipeline.voice import _generate_voice_scripts
 from manju.utils import ai
 from manju.utils.formats import _build_pdf_html
-from manju.utils.runtime import join_api_url, safe_filename
+from manju.utils.runtime import atomic_write_json, join_api_url, safe_filename
 
 from test_storyboard_pipeline import LEGACY_STORYBOARD, _plan_response, _shots_response
 from manju.pipeline.storyboard_schema import normalize_storyboard
@@ -43,6 +43,25 @@ class RuntimeTests(unittest.TestCase):
                          "https://host/v1/chat/completions")
         self.assertNotIn(":", safe_filename("重生：归来/第一章"))
         self.assertEqual(safe_filename("CON"), "_CON")
+
+    def test_atomic_json_write_retries_transient_sharing_violation(self):
+        real_replace = os.replace
+        attempts = []
+
+        def transient_replace(source, target):
+            attempts.append((source, target))
+            if len(attempts) == 1:
+                raise PermissionError("transient sharing violation")
+            return real_replace(source, target)
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch("manju.utils.runtime.os.replace", side_effect=transient_replace), \
+             patch("manju.utils.runtime.time.sleep"):
+            target = os.path.join(directory, "state.json")
+            atomic_write_json(target, {"status": "succeeded"})
+            with open(target, encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle), {"status": "succeeded"})
+        self.assertEqual(len(attempts), 2)
 
     def test_generic_llm_base_is_normalized_and_missing_config_not_cached(self):
         ai.reset_ai_config()

@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+.pytest_cache/
 .env
 .manju.env
 *.egg-info/
@@ -7,3 +8,9 @@ dist/
 build/
 .venv/
 /work/
+/manju-output/
+/mock_result*/
+/mock_visual_result*/
+*.candidate.json
+*.promotion.json
+PROJECT_HANDOFF_*.md

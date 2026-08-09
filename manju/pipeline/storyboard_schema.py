@@ -87,12 +87,18 @@ def duration_label(shot: dict) -> str:
 
 
 def normalize_character(character: dict) -> dict:
-    return {
+    normalized = {
         "name": _text(character.get("name")) or "未命名角色",
+        "name_en": _text(character.get("name_en")),
         "role": _text(character.get("role")),
         "anchor_description": _text(character.get("anchor_description"))
         or _text(character.get("visual_anchor")),
+        "anchor_description_en": _text(character.get("anchor_description_en")),
     }
+    character_id = _text(character.get("character_id"))
+    if character_id:
+        normalized["character_id"] = character_id
+    return normalized
 
 
 def normalize_shot(shot: dict, scene_id: str, index: int) -> dict:
@@ -110,7 +116,8 @@ def normalize_shot(shot: dict, scene_id: str, index: int) -> dict:
         "voice": _text(assets.get("voice")),
         "video": _text(assets.get("video")),
     }
-    return {
+    visual_source = _dict(shot.get("visual"))
+    normalized = {
         "shot_id": shot_id,
         "duration_seconds": get_duration_seconds(shot),
         "visual": {
@@ -120,6 +127,14 @@ def normalize_shot(shot: dict, scene_id: str, index: int) -> dict:
             "camera_movement": get_visual(shot, "camera_movement"),
             "description": get_visual(shot, "description"),
             "color_tone": get_visual(shot, "color_tone"),
+            "visible_character_ids": [
+                str(item).strip() for item in visual_source.get("visible_character_ids", [])
+                if str(item).strip()
+            ] if isinstance(visual_source.get("visible_character_ids"), list) else [],
+            "key_props": [
+                dict(item) for item in visual_source.get("key_props", [])
+                if isinstance(item, dict) and str(item.get("prop_id", "")).strip()
+            ] if isinstance(visual_source.get("key_props"), list) else [],
         },
         "audio": {
             "speaker": _text(audio.get("speaker")),
@@ -131,7 +146,7 @@ def normalize_shot(shot: dict, scene_id: str, index: int) -> dict:
             "image_cn": get_prompt(shot, "image_cn"),
             "image_en": get_prompt(shot, "image_en"),
             "video": get_prompt(shot, "video"),
-            "video_cn": get_prompt(shot, "video_cn"),
+            "video_cn": get_prompt(shot, "video_cn") or get_prompt(shot, "video"),
             "video_en": get_prompt(shot, "video_en"),
         },
         "assets": normalized_assets,
@@ -140,6 +155,38 @@ def normalize_shot(shot: dict, scene_id: str, index: int) -> dict:
             for media in ("image", "voice", "video")
         },
     }
+    source_beat_ids = shot.get("source_beat_ids")
+    if isinstance(source_beat_ids, list):
+        normalized["source_beat_ids"] = [
+            str(item).strip() for item in source_beat_ids if str(item).strip()
+        ]
+    visible_prop_ids = shot.get("visible_prop_ids")
+    if isinstance(visible_prop_ids, list):
+        # Preserve an explicit empty list: it distinguishes a deliberately
+        # prop-free frame from legacy storyboards that never declared bindings.
+        normalized["visible_prop_ids"] = [
+            str(item).strip() for item in visible_prop_ids if str(item).strip()
+        ]
+    temporal_relations = shot.get("temporal_relations")
+    if isinstance(temporal_relations, list):
+        normalized["temporal_relations"] = [
+            dict(item) for item in temporal_relations if isinstance(item, dict)
+        ]
+    visual_constraints = shot.get("visual_constraints")
+    if not isinstance(visual_constraints, list):
+        visual_constraints = visual_source.get("visual_constraints")
+    if isinstance(visual_constraints, list):
+        # Planning constraints are preserved verbatim here.  Their stricter
+        # versioned validation belongs to the optional local visual planner.
+        normalized["visual_constraints"] = [
+            dict(item) for item in visual_constraints if isinstance(item, dict)
+        ]
+    layout_preferences = shot.get("layout_preferences")
+    if isinstance(layout_preferences, list):
+        normalized["layout_preferences"] = [
+            dict(item) for item in layout_preferences if isinstance(item, dict)
+        ]
+    return normalized
 
 
 def normalize_scene(scene: dict, index: int) -> dict:
@@ -148,7 +195,7 @@ def normalize_scene(scene: dict, index: int) -> dict:
     if not isinstance(shots, list):
         shots = []
     continuity = _dict(scene.get("continuity"))
-    return {
+    normalized = {
         "scene_id": scene_id,
         "heading": get_scene_heading(scene),
         "purpose": _text(scene.get("purpose")),
@@ -164,6 +211,23 @@ def normalize_scene(scene: dict, index: int) -> dict:
             if isinstance(shot, dict)
         ],
     }
+    source_beat_ids = scene.get("source_beat_ids")
+    if isinstance(source_beat_ids, list):
+        normalized["source_beat_ids"] = [
+            str(item).strip() for item in source_beat_ids if str(item).strip()
+        ]
+    temporal_relations = scene.get("temporal_relations")
+    if isinstance(temporal_relations, list):
+        normalized["temporal_relations"] = [
+            dict(item) for item in temporal_relations if isinstance(item, dict)
+        ]
+    key_props = scene.get("key_props")
+    if isinstance(key_props, list):
+        normalized["key_props"] = [
+            dict(item) for item in key_props
+            if isinstance(item, dict) and str(item.get("prop_id", "")).strip()
+        ]
+    return normalized
 
 
 def normalize_storyboard(storyboard: dict, *, title: str = "未命名", metadata: dict | None = None) -> dict:

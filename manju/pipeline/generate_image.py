@@ -19,6 +19,7 @@ from manju.utils.runtime import (
     atomic_write_json,
     content_fingerprint,
     decode_data_url,
+    file_data_url,
     join_api_url,
     read_json,
     safe_filename,
@@ -27,12 +28,27 @@ from manju.utils.runtime import (
 DEFAULT_SIZE = "1024x1024"
 
 
+def _bounded_env_int(env: dict, key: str, default: int,
+                     minimum: int, maximum: int) -> int:
+    try:
+        value = int(env.get(key, str(default)))
+    except (TypeError, ValueError):
+        value = default
+    return max(minimum, min(maximum, value))
+
+
 def _get_image_config() -> dict:
     env = load_manju_env()
     return {
         "api_base": env.get("MANJU_IMAGE_API_BASE", ""),
         "api_key": env.get("MANJU_IMAGE_API_KEY", ""),
         "model": env.get("MANJU_IMAGE_MODEL", ""),
+        "timeout_seconds": _bounded_env_int(
+            env, "MANJU_IMAGE_TIMEOUT_SECONDS", 300, 30, 1800,
+        ),
+        "download_timeout_seconds": _bounded_env_int(
+            env, "MANJU_IMAGE_DOWNLOAD_TIMEOUT_SECONDS", 120, 15, 600,
+        ),
     }
 
 
@@ -65,7 +81,7 @@ def _extract_image_reference(result: dict) -> str | None:
     return None
 
 
-def _request_json(url: str, payload: dict, api_key: str, timeout: int = 120,
+def _request_json(url: str, payload: dict, api_key: str, timeout: int = 300,
                   retries: int = 2) -> dict | None:
     request = urllib.request.Request(
         url,
@@ -92,14 +108,15 @@ def _request_json(url: str, payload: dict, api_key: str, timeout: int = 120,
 
 
 def _generate_txt2img(prompt: str, size: str = DEFAULT_SIZE, model: str = "",
-                      api_base: str = "", api_key: str = "") -> str | None:
+                      api_base: str = "", api_key: str = "",
+                      timeout: int = 300) -> str | None:
     if not api_key or not api_base:
         print("   ⚠ 生图API配置不完整", file=sys.stderr)
         return None
     result = _request_json(
         join_api_url(api_base, "images/generations"),
         {"model": model, "prompt": prompt, "size": _validate_size(size), "n": 1},
-        api_key,
+        api_key, timeout=timeout,
     )
     if not result:
         return None
@@ -113,7 +130,8 @@ def _generate_txt2img(prompt: str, size: str = DEFAULT_SIZE, model: str = "",
 
 
 def _generate_img2img(prompt: str, ref_url: str, size: str = DEFAULT_SIZE,
-                      model: str = "", api_base: str = "", api_key: str = "") -> str | None:
+                      model: str = "", api_base: str = "", api_key: str = "",
+                      timeout: int = 300) -> str | None:
     """JSON img2img for providers accepting URL/data-URL references."""
     if not api_key or not api_base:
         return None
@@ -121,7 +139,7 @@ def _generate_img2img(prompt: str, ref_url: str, size: str = DEFAULT_SIZE,
         join_api_url(api_base, "images/generations"),
         {"model": model, "prompt": prompt, "size": _validate_size(size),
          "n": 1, "image": ref_url},
-        api_key,
+        api_key, timeout=timeout,
     )
     return _extract_image_reference(result or {})
 
@@ -149,7 +167,8 @@ def _multipart_body(fields: dict[str, str], file_path: str) -> tuple[bytes, str]
 
 
 def _generate_img2img_local(prompt: str, file_path: str, size: str, model: str,
-                            api_base: str, api_key: str, retries: int = 2) -> str | None:
+                            api_base: str, api_key: str, retries: int = 2,
+                            timeout: int = 300) -> str | None:
     fields = {"prompt": prompt, "size": _validate_size(size), "n": "1"}
     if model:
         fields["model"] = model
@@ -161,7 +180,7 @@ def _generate_img2img_local(prompt: str, file_path: str, size: str, model: str,
     )
     for attempt in range(retries + 1):
         try:
-            with urllib.request.urlopen(request, timeout=180) as response:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 return _extract_image_reference(json.loads(response.read().decode("utf-8")))
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")[:500]
@@ -179,7 +198,7 @@ def _generate_img2img_local(prompt: str, file_path: str, size: str, model: str,
 
 
 def _download_image(reference: str, output_path: str, max_retries: int = 3,
-                    overwrite: bool = False) -> bool:
+                    overwrite: bool = False, timeout: int = 120) -> bool:
     os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
     if not overwrite and os.path.isfile(output_path) and os.path.getsize(output_path) >= 512:
         return True
@@ -190,7 +209,7 @@ def _download_image(reference: str, output_path: str, max_retries: int = 3,
         return bool(embedded)
     for attempt in range(max_retries):
         try:
-            with urllib.request.urlopen(urllib.request.Request(reference), timeout=120) as response:
+            with urllib.request.urlopen(urllib.request.Request(reference), timeout=timeout) as response:
                 content = response.read()
             if not content:
                 raise OSError("empty image response")
@@ -222,6 +241,87 @@ def _record_cache(output_path: str, fingerprint: str, **metadata: object) -> Non
     atomic_write_json(_cache_path(output_path), {"fingerprint": fingerprint, **metadata})
 
 
+def get_image_provider_capabilities() -> dict:
+    """Return a small, serializable capability description without credentials."""
+    env = load_manju_env()
+    mode = str(env.get("MANJU_IMAGE_REFERENCE_MODE", "single")).strip().lower()
+    if mode not in {"single", "multi"}:
+        mode = "single"
+    try:
+        maximum = int(env.get("MANJU_IMAGE_MAX_REFERENCES", "1" if mode == "single" else "8"))
+    except (TypeError, ValueError):
+        maximum = 1 if mode == "single" else 8
+    return {
+        "reference_mode": mode,
+        "max_references": max(1, maximum),
+        "multi_reference_field": str(env.get("MANJU_IMAGE_MULTI_REFERENCE_FIELD", "images")),
+    }
+
+
+def generate_image_with_references(
+    prompt: str,
+    output_path: str,
+    reference_paths: list[str] | None = None,
+    size: str = DEFAULT_SIZE,
+) -> str | None:
+    """Generate an exact output path through the configured provider adapter.
+
+    The default OpenAI-compatible adapter supports one local reference via
+    ``images/edits``. Providers declaring ``MANJU_IMAGE_REFERENCE_MODE=multi``
+    receive data URLs in the configurable JSON reference field.
+    """
+    cfg = _get_image_config()
+    if not cfg["api_key"] or not cfg["api_base"]:
+        print("❌ 未配置生图API", file=sys.stderr)
+        return None
+    references = [os.path.abspath(path) for path in (reference_paths or []) if os.path.isfile(path)]
+    capabilities = get_image_provider_capabilities()
+    normalized_size = _validate_size(size)
+    fingerprint = content_fingerprint(
+        prompt,
+        [(path, os.path.getsize(path), int(os.path.getmtime(path))) for path in references],
+        normalized_size,
+        cfg["model"],
+        capabilities,
+    )
+    if _cache_matches(output_path, fingerprint):
+        return output_path
+
+    generated: str | None
+    if references and capabilities["reference_mode"] == "multi":
+        limited = references[:capabilities["max_references"]]
+        payload = {
+            "model": cfg["model"], "prompt": prompt,
+            "size": normalized_size, "n": 1,
+            capabilities["multi_reference_field"]: [file_data_url(path) for path in limited],
+        }
+        generated = _extract_image_reference(_request_json(
+            join_api_url(cfg["api_base"], "images/generations"), payload, cfg["api_key"],
+            timeout=cfg.get("timeout_seconds", 300),
+        ) or {})
+    elif references:
+        generated = _generate_img2img_local(
+            prompt, references[0], normalized_size,
+            cfg["model"], cfg["api_base"], cfg["api_key"],
+            timeout=cfg.get("timeout_seconds", 300),
+        )
+    else:
+        generated = _generate_txt2img(
+            prompt, normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"],
+            timeout=cfg.get("timeout_seconds", 300),
+        )
+    if not generated or not _download_image(
+        generated, output_path, overwrite=True, timeout=cfg.get("download_timeout_seconds", 120)
+    ):
+        return None
+    _record_cache(
+        output_path, fingerprint, prompt=prompt,
+        references=[os.path.basename(path) for path in references],
+        model=cfg["model"], size=normalized_size, capabilities=capabilities,
+    )
+    return output_path
+
+
 def run_image(prompt: str, image_path: str = "", size: str = DEFAULT_SIZE,
               output_dir: str | None = None, output_name: str = "") -> str | None:
     cfg = _get_image_config()
@@ -242,17 +342,22 @@ def run_image(prompt: str, image_path: str = "", size: str = DEFAULT_SIZE,
 
     if image_path and os.path.isfile(image_path):
         reference = _generate_img2img_local(
-            prompt, image_path, normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"])
+            prompt, image_path, normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"],
+            timeout=cfg.get("timeout_seconds", 300))
     elif image_path.startswith(("http://", "https://", "data:")):
         reference = _generate_img2img(
-            prompt, image_path, normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"])
+            prompt, image_path, normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"],
+            timeout=cfg.get("timeout_seconds", 300))
     elif image_path:
         print(f"❌ 参考图片不存在: {image_path}", file=sys.stderr)
         return None
     else:
         reference = _generate_txt2img(
-            prompt, normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"])
-    if not reference or not _download_image(reference, output_path, overwrite=True):
+            prompt, normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"],
+            timeout=cfg.get("timeout_seconds", 300))
+    if not reference or not _download_image(
+        reference, output_path, overwrite=True, timeout=cfg.get("download_timeout_seconds", 120)
+    ):
         return None
     _record_cache(output_path, fingerprint, prompt=prompt, reference=image_path,
                   model=cfg["model"], size=normalized_size)
@@ -292,8 +397,12 @@ def run_batch_images(prompts: list[dict], output_dir: str,
             success = 1
         else:
             reference = _generate_txt2img(
-                first["prompt"], normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"])
-            success = int(bool(reference and _download_image(reference, first_path, overwrite=True)))
+                first["prompt"], normalized_size, cfg["model"], cfg["api_base"], cfg["api_key"],
+                timeout=cfg.get("timeout_seconds", 300))
+            success = int(bool(reference and _download_image(
+                reference, first_path, overwrite=True,
+                timeout=cfg.get("download_timeout_seconds", 120),
+            )))
             if success:
                 _record_cache(first_path, first_fp, prompt=first["prompt"])
         if not success:
@@ -309,7 +418,7 @@ def run_batch_images(prompts: list[dict], output_dir: str,
                 return True
             generated = _generate_img2img_local(
                 item["prompt"], first_path, normalized_size, cfg["model"],
-                cfg["api_base"], cfg["api_key"],
+                cfg["api_base"], cfg["api_key"], timeout=cfg.get("timeout_seconds", 300),
             )
             if not generated:
                 nonlocal reference
@@ -317,13 +426,16 @@ def run_batch_images(prompts: list[dict], output_dir: str,
                     if not reference:
                         reference = _generate_txt2img(
                             first["prompt"], normalized_size, cfg["model"],
-                            cfg["api_base"], cfg["api_key"])
+                            cfg["api_base"], cfg["api_key"], timeout=cfg.get("timeout_seconds", 300))
                 if reference:
                     generated = _generate_img2img(
                         item["prompt"], reference, normalized_size, cfg["model"],
-                        cfg["api_base"], cfg["api_key"],
+                        cfg["api_base"], cfg["api_key"], timeout=cfg.get("timeout_seconds", 300),
                     )
-            if generated and _download_image(generated, path, overwrite=True):
+            if generated and _download_image(
+                generated, path, overwrite=True,
+                timeout=cfg.get("download_timeout_seconds", 120),
+            ):
                 _record_cache(path, fingerprint, prompt=item["prompt"])
                 return True
             return False

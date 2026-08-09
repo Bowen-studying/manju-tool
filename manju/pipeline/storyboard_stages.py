@@ -80,10 +80,10 @@ def _summarize_chunks(chunks: list[str], run_dir: str, resume: bool) -> list[str
 def _plan_prompts(text: str, title: str, word_count: int, scene_count: int,
                   chunk_count: int) -> tuple[str, str]:
     system = """你是漫剧总导演和美术指导。先做创意圣经与场景规划，不生成具体镜头。
-仅输出 JSON。角色锚定必须具体并可原样复用。每个场景用 source_chunk_ids 标出相关原文分块。
+仅输出 JSON。角色锚定必须具体并可原样复用，只描述不可变的视觉身份特征。年龄只能在原文明确提供精确年龄或年龄段时写入，并必须忠实保留；原文未提供年龄时必须省略，不能猜测或补写。其他视觉身份特征可包括性别、发型脸型、体型肤色、永久标记和默认服装；不得包含表情、动作、道具、情绪或超自然能力等镜头状态，也不要用“无其他永久标记”等无效否定描述。每个角色同时给出不含中文的英文名、中英文视觉锚点。不要使用在世创作者姓名描述风格，改用可观察的光影、色彩、材质和镜头语言。每个场景用 source_chunk_ids 标出相关原文分块。
 输出结构：
 {"title":"标题","creative_bible":{"style_anchor":"固定风格","aspect_ratio":"9:16",
-"characters":[{"name":"角色","role":"定位","anchor_description":"固定视觉锚定"}]},
+"characters":[{"name":"角色","name_en":"English Name","role":"定位","anchor_description":"中文固定视觉身份","anchor_description_en":"English reusable visual identity"}]},
 "scenes":[{"scene_id":"1","heading":"INT./EXT. 地点 - 时间","purpose":"叙事目的",
 "visual_mood":"氛围","scene_template":"环境、光影、色彩、记忆点",
 "source_chunk_ids":[1],"continuity":{"from_previous":"承接","to_next":"转场"}}]}"""
@@ -101,10 +101,10 @@ def _scene_prompts(text: str, title: str, bible: dict, scene: dict) -> tuple[str
 "visual":{"shot_type":"景别","composition":"构图","composition_emotion":"情绪作用",
 "camera_movement":"运镜机位","description":"可拍摄动作","color_tone":"色彩情绪"},
 "audio":{"speaker":"","dialogue":"","narration":"","sound_music":""},
-"prompts":{"image_cn":"五要素中文提示词","image_en":"five-element English prompt","video":"动态描述"},
+"prompts":{"image_cn":"含中文角色锚点的五要素提示词","image_en":"five-element prompt with English character anchors","video":"中文动态描述","video_cn":"中文动态描述","video_en":"English motion prompt"},
 "assets":{"image":"","voice":"","video":""},
 "status":{"image":"pending","voice":"pending","video":"pending"}}]}
-要求：角色完整复用视觉锚定；对白与旁白分开；镜头、动作、视线和轴线连续；duration_seconds为数字。"""
+要求：只为构图或生图画面中实际可见的角色加入对应中英文视觉锚点，不要加入画外、仅被提及或未来才出场的角色；不得使用在世创作者姓名描述风格；对白与旁白分开；镜头、动作、视线和轴线连续；一个短镜头不要塞入过多连续动作；“固定镜头”不得同时写推、摇、移、跟等运动；聚焦表情时使用近景或特写；duration_seconds为数字；color_tone、video_cn 和 video_en 均不得为空。"""
     context = {"title": title, "creative_bible": bible, "target_scene": scene}
     user = f"场景号必须为 {scene.get('scene_id')}。\n上下文：{json.dumps(context, ensure_ascii=False)}\n相关原文：\n{text}"
     return system, user
