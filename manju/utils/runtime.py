@@ -85,7 +85,9 @@ def atomic_write_json(path: str, value: Any) -> None:
     os.makedirs(directory, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".manju-", suffix=".tmp", dir=directory)
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        # JSON artifacts can themselves be hash-bound contracts.  Fix newline
+        # bytes so their fingerprints do not vary between Windows and POSIX.
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
             json.dump(value, handle, ensure_ascii=False, indent=2)
             handle.flush()
             os.fsync(handle.fileno())
@@ -103,6 +105,37 @@ def atomic_write_json(path: str, value: Any) -> None:
                     raise
                 # Windows can briefly deny replacement while a read-only
                 # observer still has the prior JSON projection open.
+                time.sleep(delay)
+                delay = min(0.05, delay * 2)
+    except Exception:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_write_bytes(path: str, value: bytes) -> None:
+    """Atomically publish already-validated binary data without transcoding it."""
+    if not isinstance(value, bytes):
+        raise TypeError("atomic_write_bytes requires bytes")
+    directory = os.path.dirname(os.path.abspath(path))
+    os.makedirs(directory, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(prefix=".manju-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(value)
+            handle.flush()
+            os.fsync(handle.fileno())
+        delay = 0.005
+        for attempt in range(8):
+            try:
+                os.replace(temporary, path)
+                break
+            except OSError as exc:
+                retryable = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+                if not retryable or attempt == 7:
+                    raise
                 time.sleep(delay)
                 delay = min(0.05, delay * 2)
     except Exception:

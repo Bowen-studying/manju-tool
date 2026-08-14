@@ -481,6 +481,19 @@ manju storyboard "sample_story.txt" --engine agent --max-scenes 1 -o demo_output
 
 Agent 模式不是固定的“规划→生成→审核”流程。主管模型通过严格 JSON 动作协议选择分析、规划、生成、组合审计或定向修订工具；未知参数会成为可恢复协议错误。Python 强制执行工具白名单、证据有效性、预算和完成条件。原文会形成带稳定 beat ID 的 Source Model，场景和镜头通过 `source_beat_ids`、`visible_character_ids` 与 `temporal_relations` 建立语义关联。模型提出的 blocking 问题必须同时引用有效原文证据和当前 storyboard JSON 路径，否则降为 advisory，不触发自动修订。它会额外生成 `review.json`、`agent_run.json`、`agent_trace.jsonl` 和 `stages/agent/checkpoints.sqlite`。当状态为 `needs_review` 时，分镜文件仍会保存，但 CLI 返回退出码 2，pipeline 会在所有媒体调用前停止。固定 v6 对照流程使用 `--engine workflow`，检查点位于 `stages/workflow/`。相同输入和参数再次使用 `--resume` 时，会从本地检查点恢复。
 
+### 可恢复项目控制器（M1）
+
+ProductionRun M1 把项目合同、分镜子 run 和顶层哈希事件链收敛到一个可迁移目录。`run` 默认采用幂等恢复语义，重复执行不会重新调用已经完成的分镜 Agent：
+
+```bash
+manju project init --source "sample_story.txt" --source-type script -o "demo-project"
+manju run "demo-project/project.json"
+manju status "demo-project/project.json"
+manju doctor "demo-project/project.json"
+```
+
+活动节点可通过 `manju pause "demo-project/project.json"` 请求暂停。以上命令均支持 `--json`，未来前端可复用同一 ProductionService DTO。M1 当前只编排分镜，不进入图像、配音或视频阶段；分镜 Agent 仍会使用已配置的 LLM 服务。完整 v1 架构与 M1 验收边界见 `docs/PRODUCTION_RUN_V1_ARCHITECTURE.md` 和 `docs/PRODUCTION_RUN_M1_ACCEPTANCE.md`。
+
 ---
 
 ## 🩺 常见问题

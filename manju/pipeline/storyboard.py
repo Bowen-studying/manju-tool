@@ -271,6 +271,7 @@ def run_storyboard(
             max_steps=agent_max_steps,
             max_calls=agent_max_calls,
             max_revisions=agent_max_revisions,
+            source_sha256=hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
         )
         manifest_value = read_json(os.path.join(storyboard_dir, "agent_run.json"))
         agent_manifest = manifest_value if isinstance(manifest_value, dict) else {}

@@ -47,6 +47,7 @@ planner = ["ortools==9.14.6206"]
 
 [project.scripts]
 manju = "manju.cli:main"
+manju-provider-worker = "manju.production.manual_worker:main"
 
 [tool.setuptools.packages.find]
 include = ["manju*"]

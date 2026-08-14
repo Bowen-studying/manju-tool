@@ -7,12 +7,14 @@ deliberately absent from the tool registry.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import sqlite3
 import sys
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from langgraph.checkpoint.sqlite import SqliteSaver
@@ -142,6 +144,7 @@ class SupervisorState(TypedDict, total=False):
     run_id: str
     trace_path: str
     model_name: str
+    source_sha256: str
     chunks: list[str]
     chunk_count: int
     summaries: list[str]
@@ -3036,6 +3039,85 @@ def _write_trace(path: str, history: list[dict]) -> None:
     os.replace(temporary, path)
 
 
+def verify_storyboard_agent_authority(
+    checkpoint_path: str,
+    trace_path: str,
+    manifest: dict[str, Any],
+    expected: dict[str, Any],
+) -> tuple[bool, str]:
+    """Verify a completed child run against its own durable LangGraph authority."""
+    run_id = str(manifest.get("run_id", ""))
+    if not run_id:
+        return False, "manifest missing run_id"
+    required_columns = {
+        "thread_id", "checkpoint_ns", "checkpoint_id", "parent_checkpoint_id",
+        "type", "checkpoint", "metadata",
+    }
+    connection: sqlite3.Connection | None = None
+    try:
+        uri = Path(checkpoint_path).resolve().as_uri() + "?mode=ro"
+        connection = sqlite3.connect(uri, uri=True)
+        quick_check = connection.execute("PRAGMA quick_check").fetchone()
+        if quick_check != ("ok",):
+            return False, "checkpoint database quick_check failed"
+        columns = {
+            str(row[1]) for row in connection.execute("PRAGMA table_info(checkpoints)")
+        }
+        if not required_columns.issubset(columns):
+            return False, "checkpoint database schema is invalid"
+        count = connection.execute(
+            "SELECT COUNT(*) FROM checkpoints WHERE thread_id = ?", (run_id,)
+        ).fetchone()
+        if not count or int(count[0]) < 1:
+            return False, "checkpoint database has no checkpoint for manifest run_id"
+
+        saver = SqliteSaver(connection)
+        saver.is_setup = True
+        checkpoint = saver.get({"configurable": {"thread_id": run_id}})
+        if not isinstance(checkpoint, dict):
+            return False, "latest checkpoint cannot be deserialized"
+        state = checkpoint.get("channel_values")
+        if not isinstance(state, dict):
+            return False, "latest checkpoint has no supervisor state"
+
+        expected_state = {
+            "run_id": run_id,
+            "status": manifest.get("status"),
+            "model_name": expected.get("model"),
+            "source_sha256": expected.get("source_sha256"),
+            "max_steps": expected.get("max_steps"),
+            "requested_max_calls": expected.get("max_calls"),
+            "max_revisions": expected.get("max_revisions"),
+        }
+        for key, value in expected_state.items():
+            if state.get(key) != value:
+                return False, f"latest checkpoint state mismatch: {key}"
+    except Exception as exc:
+        return False, f"checkpoint verification failed: {type(exc).__name__}"
+    finally:
+        if connection is not None:
+            connection.close()
+
+    try:
+        trace_events: list[dict[str, Any]] = []
+        with open(trace_path, "r", encoding="utf-8") as handle:
+            for line_number, line in enumerate(handle, start=1):
+                if not line.endswith("\n"):
+                    return False, f"trace line {line_number} is truncated"
+                event = json.loads(line)
+                if not isinstance(event, dict):
+                    return False, f"trace line {line_number} is not an object"
+                trace_events.append(event)
+        if not trace_events:
+            return False, "trace is empty"
+        for sequence, event in enumerate(trace_events, start=1):
+            if event.get("sequence") != sequence or event.get("run_id") != run_id:
+                return False, f"trace binding mismatch at line {sequence}"
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        return False, f"trace verification failed: {type(exc).__name__}"
+    return True, ""
+
+
 def _execute_tool_node(state: SupervisorState) -> dict:
     pending = state.get("pending_action", {})
     action = str(pending.get("action", ""))
@@ -3090,6 +3172,7 @@ def _execute_tool_node(state: SupervisorState) -> dict:
     tool_counts[action] = tool_counts.get(action, 0) + 1
     event = {
         "sequence": len(state.get("action_history", [])) + 1,
+        "run_id": state["run_id"],
         "timestamp": _now(),
         "action": action,
         "args": args,
@@ -3174,6 +3257,7 @@ def _manifest(state: SupervisorState, checkpoint_path: str) -> dict:
         "title": state["title"],
         "scene_count": state["scene_count"],
         "model": state.get("model_name", ""),
+        "source_sha256": state.get("source_sha256", ""),
         "status": state.get("status", "unknown"),
         "stop_reason": state.get("stop_reason", ""),
         "tool_steps": state.get("tool_steps", 0),
@@ -3228,6 +3312,7 @@ def generate_storyboard_agent(
     max_steps: int = DEFAULT_MAX_STEPS,
     max_calls: int | None = DEFAULT_MAX_CALLS,
     max_revisions: int = DEFAULT_MAX_REVISIONS,
+    source_sha256: str = "",
 ) -> dict | None:
     """Run or resume the single-supervisor storyboard Agent."""
     max_steps = max(1, int(max_steps))
@@ -3277,6 +3362,7 @@ def generate_storyboard_agent(
         "run_id": run_id,
         "trace_path": trace_path,
         "model_name": model_name,
+        "source_sha256": source_sha256 or hashlib.sha256(text.encode("utf-8")).hexdigest(),
         "chunk_count": chunk_count,
         "max_steps": max_steps,
         "max_calls": effective_max_calls,

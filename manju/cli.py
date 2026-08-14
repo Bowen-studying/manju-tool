@@ -52,6 +52,406 @@ def cli():
       manju generate <描述>    — 文字/图片→AI视频"""
 
 
+def _echo_production_payload(value, *, json_output=False):
+    payload = value.to_dict() if hasattr(value, "to_dict") else value
+    if json_output:
+        click.echo(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    reason = payload.get("reason", {}) if isinstance(payload, dict) else {}
+    click.echo(f"项目: {payload.get('project_id', '')}")
+    if payload.get("run_id"):
+        click.echo(f"运行: {payload['run_id']}")
+    click.echo(f"状态: {payload.get('status', 'unknown')}")
+    if payload.get("current_stage"):
+        click.echo(f"阶段: {payload['current_stage']}")
+    if reason:
+        click.echo(f"原因: {reason.get('code', '')} - {reason.get('message', '')}")
+
+
+def _handle_production_error(exc, *, json_output=False):
+    if json_output:
+        click.echo(json.dumps(exc.to_dict(), ensure_ascii=False, sort_keys=True), err=True)
+    else:
+        click.echo(f"ProductionRun 失败 [{exc.code}]: {exc.message}", err=True)
+    raise click.exceptions.Exit(exc.exit_code)
+
+
+def _production_service(project_json, *, assemble_visual_provider=True):
+    """Resolve an ephemeral operator key; it is intentionally never written to a project."""
+    from manju.production import ProductionService
+    from manju.production.adapters.visual import VisualStageAdapter
+    from manju.production.runtime_profiles import is_manual_sync_profile, resolve_visual_provider_registry
+    from manju.production.security import MappingHmacKeyProvider
+
+    key = os.environ.get("MANJU_PRODUCTION_HMAC_KEY", "")
+    with open(project_json, "r", encoding="utf-8") as handle:
+        project = json.load(handle)
+    key_id = project.get("integrity", {}).get("hmac_key_id", "")
+    visual = project.get("production", {}).get("visual", {})
+    profile = visual.get("provider_profile", "") if visual.get("enabled") else ""
+    adapter = None
+    # A manual_sync profile intentionally has no automatic provider instance.
+    # This still lets the deterministic local stages reach approval/grant; the
+    # later reserved call can only be advanced by prepare-manual + worker.
+    if assemble_visual_provider and profile and profile != "mock" and not is_manual_sync_profile(profile):
+        adapter = VisualStageAdapter(provider_registry=resolve_visual_provider_registry(required_profile=profile))
+    hmac_provider = MappingHmacKeyProvider({key_id: key.encode("utf-8")}) if key else None
+    return ProductionService(project_json, visual_adapter=adapter, hmac_key_provider=hmac_provider)
+
+
+@cli.group()
+def project():
+    """创建和导入可恢复的 ProductionRun 项目。"""
+
+
+@project.command("init")
+@click.option("--source", type=click.Path(exists=True, dir_okay=False), required=True,
+              help="小说、剧本或分镜源文件")
+@click.option("--source-type", type=click.Choice(["novel", "script", "storyboard"]), required=True)
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False), required=True,
+              help="新项目目录")
+@click.option("--engine", type=click.Choice(["legacy", "workflow", "agent"]), default="agent",
+              show_default=True, help="分镜引擎")
+@click.option("--max-scenes", type=click.IntRange(1, 8), default=None)
+@click.option("--agent-max-steps", type=click.IntRange(min=1), default=40, show_default=True)
+@click.option("--agent-max-calls", type=str, default="auto", callback=_parse_agent_max_calls,
+              show_default=True)
+@click.option("--agent-max-revisions", type=click.IntRange(min=0), default=2, show_default=True)
+@click.option("--provider-profile", default="default", show_default=True)
+@click.option("--hmac-key-id", default="manju-local-default", show_default=True)
+@click.option("--visual-mock", is_flag=True, help="启用仅离线的 mock 视觉阶段")
+@click.option("--visual-provider-profile", default="", help="部署侧已配置的异步视觉 Provider profile")
+@click.option("--visual-request-file", type=click.Path(exists=True, dir_okay=False), default=None,
+              help="仅含已审批公开生图字段的 JSON 文件")
+@click.option("--visual-operation-kind", default="image_generation", show_default=True)
+@click.option("--visual-max-calls", type=click.IntRange(min=1), default=1, show_default=True)
+@click.option("--visual-max-amount", default="0", show_default=True)
+@click.option("--visual-settlement-mode", type=click.Choice(["provider_evidence", "contractual_tariff"]), default="provider_evidence", show_default=True)
+@click.option("--visual-contractual-tariff-id", default="", help="Pre-agreed tariff identifier; never an upstream invoice")
+@click.option("--visual-contractual-tariff-amount", default="", help="Pre-agreed amount in project minor currency units")
+@click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")
+def project_init(source, source_type, output_dir, engine, max_scenes, agent_max_steps,
+                  agent_max_calls, agent_max_revisions, provider_profile, hmac_key_id,
+                  visual_mock, visual_provider_profile, visual_request_file, visual_operation_kind,
+                  visual_max_calls, visual_max_amount, visual_settlement_mode,
+                  visual_contractual_tariff_id, visual_contractual_tariff_amount, json_output):
+    """创建项目合同并接收一个持久化源文件。"""
+    from manju.production import ProductionError, initialize_project
+
+    try:
+        if visual_mock and visual_provider_profile:
+            raise ProductionError("OPERATION_CONTRACT_INVALID", "visual mock 与真实 Provider profile 不能同时启用")
+        visual_request = None
+        if visual_request_file:
+            with open(visual_request_file, "r", encoding="utf-8") as handle:
+                visual_request = json.load(handle)
+        snapshot = initialize_project(
+            source=source,
+            source_type=source_type,
+            output_dir=output_dir,
+            engine=engine,
+            max_scenes=max_scenes,
+            max_steps=agent_max_steps,
+            max_calls=agent_max_calls,
+            max_revisions=agent_max_revisions,
+            provider_profile=provider_profile,
+            hmac_key_id=hmac_key_id,
+            visual_enabled=visual_mock or bool(visual_provider_profile),
+            visual_maximum_paid_calls=visual_max_calls,
+            visual_maximum_amount=visual_max_amount,
+            visual_provider_profile=visual_provider_profile or "mock",
+            visual_provider_request=visual_request,
+            visual_operation_kind="mock_image" if visual_mock else visual_operation_kind,
+            visual_settlement_mode=visual_settlement_mode,
+            visual_contractual_tariff_id=visual_contractual_tariff_id,
+            visual_contractual_tariff_amount=visual_contractual_tariff_amount,
+        )
+        _echo_production_payload(snapshot, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("run")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")
+def production_run(project_json, json_output):
+    """幂等推进项目，直到完成或遇到人工/外部阻塞。"""
+    from manju.production import ProductionError, ProductionService
+
+    try:
+        snapshot = _production_service(project_json).run_until_blocked()
+        _echo_production_payload(snapshot, json_output=json_output)
+        if snapshot.exit_code:
+            raise click.exceptions.Exit(snapshot.exit_code)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("status")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")
+def production_status(project_json, json_output):
+    """读取并验证当前项目状态，不推进阶段。"""
+    from manju.production import ProductionError, ProductionService
+
+    try:
+        snapshot = _production_service(project_json, assemble_visual_provider=False).get_status()                                            
+        _echo_production_payload(snapshot, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("pause")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")
+def production_pause(project_json, json_output):
+    """在节点边界暂停活动运行。"""
+    from manju.production import ProductionError, ProductionService
+
+    try:
+        snapshot = _production_service(project_json).request_pause()
+        _echo_production_payload(snapshot, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("doctor")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON 诊断结果")
+def production_doctor(project_json, json_output):
+    """校验项目、源文件、事件链、合同和已有分镜子 run。"""
+    from manju.production import ProductionService
+
+    report = _production_service(project_json, assemble_visual_provider=False).doctor()
+    if json_output:
+        click.echo(json.dumps(report, ensure_ascii=False, sort_keys=True))
+    else:
+        click.echo(f"诊断状态: {report.get('status', 'failed')}")
+        for check in report.get("checks", []):
+            click.echo(f"- {check.get('name')}: {check.get('status')}")
+    if report.get("status") != "passed":
+        raise click.exceptions.Exit(1)
+
+
+@cli.command("approvals")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")
+def production_approvals(project_json, json_output):
+    """列出顶层、签名的视觉付费审批记录。"""
+    from manju.production import ProductionError
+    try:
+        value = {"schema_version": "1", "approvals": _production_service(project_json).list_approvals()}
+        if json_output:
+            click.echo(json.dumps(value, ensure_ascii=False, sort_keys=True))
+        else:
+            click.echo(f"审批数: {len(value['approvals'])}")
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+def _decision_command(project_json, request_id, reviewer, expected_last_event_hash, decision, json_output):
+    from manju.production import ProductionError
+    try:
+        snapshot = _production_service(project_json).decide_approval(
+            request_id, decision=decision, reviewer=reviewer,
+            expected_last_event_hash=expected_last_event_hash,
+        )
+        _echo_production_payload(snapshot, json_output=json_output)
+        if snapshot.exit_code:
+            raise click.exceptions.Exit(snapshot.exit_code)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("approve")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.argument("request_id")
+@click.option("--reviewer", required=True)
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_approve(project_json, request_id, reviewer, expected_last_event_hash, json_output):
+    """签名记录人工同意；仍须显式签发 grant。"""
+    _decision_command(project_json, request_id, reviewer, expected_last_event_hash, "approve", json_output)
+
+
+@cli.command("reject")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.argument("request_id")
+@click.option("--reviewer", required=True)
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_reject(project_json, request_id, reviewer, expected_last_event_hash, json_output):
+    """签名记录人工拒绝。"""
+    _decision_command(project_json, request_id, reviewer, expected_last_event_hash, "reject", json_output)
+
+
+@cli.command("issue-grant")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.argument("request_id")
+@click.option("--grant-id", required=True)
+@click.option("--issued-by", required=True)
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_issue_grant(project_json, request_id, grant_id, issued_by, expected_last_event_hash, json_output):
+    """生成签名 grant；M2.0 不会据此调用 Provider。"""
+    from manju.production import ProductionError
+    try:
+        snapshot = _production_service(project_json).issue_grant(
+            request_id, grant_id=grant_id, issued_by=issued_by,
+            expected_last_event_hash=expected_last_event_hash,
+        )
+        _echo_production_payload(snapshot, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("prepare-manual")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_prepare_manual(project_json, expected_last_event_hash, json_output):
+    """Create a signed manual_sync dispatch package. It never calls a Provider."""
+    from manju.production import ProductionError
+    try:
+        value = _production_service(project_json, assemble_visual_provider=False).prepare_manual_dispatch(
+            expected_last_event_hash=expected_last_event_hash
+        )
+        _echo_production_payload(value, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("import-manual-result")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--result-file", type=click.Path(exists=True, dir_okay=False), required=True)
+@click.option("--package-dir", type=click.Path(exists=True, file_okay=False), required=True)
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_import_manual_result(project_json, result_file, package_dir, expected_last_event_hash, json_output):
+    """Import a signed manual worker result; cost remains blocked until reconciliation."""
+    from manju.production import ProductionError
+    from manju.production.manual_operations import ManualResultPackage
+    try:
+        with open(result_file, "r", encoding="utf-8") as handle:
+            result = ManualResultPackage.from_dict(json.load(handle))
+        snapshot = _production_service(project_json, assemble_visual_provider=False).import_manual_result(
+            result, package_dir=package_dir, expected_last_event_hash=expected_last_event_hash
+        )
+        _echo_production_payload(snapshot, json_output=json_output)
+        if snapshot.exit_code:
+            raise click.exceptions.Exit(snapshot.exit_code)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("reconcile-manual")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--operation-id", required=True)
+@click.option("--actual-amount", required=True)
+@click.option("--currency", required=True)
+@click.option("--provider-reference", required=True)
+@click.option("--reviewer", required=True)
+@click.option("--evidence-file", type=click.Path(exists=True, dir_okay=False), required=True)
+@click.option("--package-dir", type=click.Path(exists=True, file_okay=False), required=True)
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_reconcile_manual(project_json, operation_id, actual_amount, currency, provider_reference, reviewer, evidence_file, package_dir, expected_last_event_hash, json_output):
+    """Sign and reconcile human-reviewed billing evidence; fixed nominal price is not accepted."""
+    from manju.production import ProductionError
+    from manju.production.manual_operations import ManualBillingEvidence, sha256_file
+    from manju.production.models import utc_now
+    try:
+        service = _production_service(project_json, assemble_visual_provider=False)
+        project = service.store.load_project()
+        snapshot = service.store.snapshot()
+        found = service._manual_dispatch(service.store.events.read(), snapshot.run_id, operation_id)
+        if found is None:
+            raise ProductionError("OPERATION_CONTRACT_INVALID", "manual dispatch is unavailable")
+        dispatch, digest = found
+        key_id, key = service._manual_key(project)
+        evidence_path = ""
+        evidence_sha256 = ""
+        evidence_path = os.path.basename(evidence_file)
+        evidence_sha256 = sha256_file(evidence_file)
+        result_event = next((event for event in service.store.events.read() if event.get("run_id") == snapshot.run_id and event.get("event_type") == "manual_result_imported"), None)
+        outcome = ((result_event or {}).get("payload") or {}).get("result", {}).get("outcome", "")
+        evidence = ManualBillingEvidence(digest, operation_id, dispatch.claim_token, outcome, actual_amount, currency,
+                                         provider_reference, evidence_path, evidence_sha256, reviewer, utc_now(), key_id).sign(key)
+        value = service.reconcile_manual_cost(evidence, package_dir=package_dir, expected_last_event_hash=expected_last_event_hash)
+        _echo_production_payload(value, json_output=json_output)
+        if value.exit_code:
+            raise click.exceptions.Exit(value.exit_code)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.command("settle-manual-contractual-tariff")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--operation-id", required=True)
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_settle_manual_contractual_tariff(project_json, operation_id, expected_last_event_hash, json_output):
+    """Settle at the Grant's pre-agreed tariff, not actual upstream cost."""
+    from manju.production import ProductionError
+    try:
+        snapshot = _production_service(project_json, assemble_visual_provider=False).settle_manual_contractual_tariff(
+            operation_id=operation_id, expected_last_event_hash=expected_last_event_hash
+        )
+        _echo_production_payload(snapshot, json_output=json_output)
+        if snapshot.exit_code:
+            raise click.exceptions.Exit(snapshot.exit_code)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@cli.group("audit")
+def production_audit():
+    """Export and verify credential-free ProductionRun evidence snapshots."""
+
+
+@production_audit.command("export")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--destination", type=click.Path(file_okay=False), required=True)
+@click.option("--worker-result-dir", type=click.Path(exists=True, file_okay=False), default=None)
+@click.option("--worker-state-dir", type=click.Path(exists=True, file_okay=False), default=None)
+@click.option("--json", "json_output", is_flag=True)
+def production_audit_export(project_json, destination, worker_result_dir, worker_state_dir, json_output):
+    """Export an evidence snapshot. HMAC keys and Provider credentials are excluded."""
+    from manju.production import ProductionError
+    from manju.production.audit import export_audit_snapshot
+    try:
+        service = _production_service(project_json, assemble_visual_provider=False)
+        project = service.store.load_project()
+        service.store.validate_source(project)
+        service.store.events.read()
+        snapshot = service.store.snapshot()
+        if snapshot.run_id:
+            service.store.validate_contract(project, snapshot.run_id)
+        value = export_audit_snapshot(project_json=project_json, destination=destination,
+                                      worker_result_dir=worker_result_dir or "", worker_state_dir=worker_state_dir or "",
+                                      key_provider=service.store.events.key_provider)
+        _echo_production_payload(value, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@production_audit.command("verify")
+@click.argument("snapshot_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--verify-hmac", is_flag=True, help="Require the external operator HMAC key and verify signed events")
+@click.option("--json", "json_output", is_flag=True)
+def production_audit_verify(snapshot_dir, verify_hmac, json_output):
+    """Verify snapshot hashes; HMAC verification always requires the external key."""
+    from manju.production import ProductionError
+    from manju.production.audit import verify_audit_snapshot
+    try:
+        project_json = os.path.join(snapshot_dir, "project", "project.json")
+        provider = _production_service(project_json, assemble_visual_provider=False).store.events.key_provider if verify_hmac else None
+        value = verify_audit_snapshot(destination=snapshot_dir, key_provider=provider, verify_hmac=verify_hmac)
+        _echo_production_payload(value, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
 # ── 剧本入口 ──────────────────────────────────────────────────────────────────
 
 @cli.command()
