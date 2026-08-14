@@ -21,6 +21,7 @@ from manju.pipeline.storyboard_supervisor import (
 from manju.production.adapters.storyboard import StoryboardStageAdapter, storyboard_source_sha256
 from manju.production.adapters.visual import VisualStageAdapter
 from manju.production.approvals import ApprovalRequest, Grant, contractual_tariff_usage, create_contractual_tariff
+from manju.production.artifacts import ArtifactGraph, ArtifactRecord
 from manju.production.events import HmacKeyProvider
 from manju.production.operations import OperationRecord
 from manju.production.manual_operations import (
@@ -215,6 +216,92 @@ class ProductionService:
                     if item["approval_request"].get("request_id") == payload.get("request_id"):
                         item["status"] = "approved" if event["event_type"] == "approval_approved" else "rejected"
         return results
+
+    def _artifact_graph_payload(self, project: dict[str, Any], graph: ArtifactGraph, snapshot: ProductionSnapshot) -> dict[str, Any]:
+        return {
+            "schema_version": "1",
+            "project_id": project["project_id"],
+            "run_id": snapshot.run_id,
+            "status": "ready",
+            "reason": {"code": "ARTIFACT_GRAPH_READY", "message": "产物图谱已验证"},
+            "next_actions": [],
+            "last_event_hash": snapshot.last_event_hash,
+            "graph": graph.to_dict(),
+        }
+
+    def get_artifact_graph(self) -> dict[str, Any]:
+        project = self.store.load_project()
+        graph, snapshot = self.store.artifact_graph_snapshot()
+        return self._artifact_graph_payload(project, graph, snapshot)
+
+    def register_artifact(
+        self,
+        *,
+        logical_id: str,
+        path: str,
+        producer_stage: str,
+        depends_on: tuple[dict[str, Any], ...] = (),
+        expected_last_event_hash: str,
+    ) -> dict[str, Any]:
+        """Register a file-backed immutable version without selecting it."""
+        with ProjectLock(self.paths.lock_file):
+            project = self.store.load_project()
+            if not self._expected_last_hash_matches(expected_last_event_hash):
+                raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "last event hash changed")
+            absolute_path = self.store.artifact_path(path)
+            snapshot = self.store.snapshot()
+            record = ArtifactRecord.from_dict({
+                "logical_id": logical_id,
+                "version_id": f"sha256:{sha256_file(absolute_path)}",
+                "path": os.path.relpath(absolute_path, self.paths.root),
+                "producer": {"stage": producer_stage, "run_id": snapshot.run_id},
+                "depends_on": list(depends_on),
+            })
+            graph = self.store.artifact_graph()
+            graph.register(record)
+            self.store.events.append(
+                "artifact_registered", project_id=project["project_id"], run_id=snapshot.run_id,
+                payload={"artifact": record.to_dict(state="available")},
+            )
+            self.store.write_projection()
+            graph, current = self.store.artifact_graph_snapshot()
+            return self._artifact_graph_payload(project, graph, current)
+
+    def select_artifact_version(
+        self, *, logical_id: str, version_id: str, expected_last_event_hash: str
+    ) -> dict[str, Any]:
+        """Select an available version and atomically record its exact invalidation closure."""
+        with ProjectLock(self.paths.lock_file):
+            project = self.store.load_project()
+            if not self._expected_last_hash_matches(expected_last_event_hash):
+                raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "last event hash changed")
+            snapshot = self.store.snapshot()
+            graph = self.store.artifact_graph()
+            previous_version_id = graph.current_version(logical_id)
+            target = graph.get(logical_id, version_id)
+            invalidated = graph.invalidated_by(target.ref) if previous_version_id else ()
+            # Invalidation is derived from the outgoing selected version, not the
+            # incoming one. It is recomputed by ArtifactGraph during every read.
+            if previous_version_id:
+                from manju.production.artifacts import ArtifactRef
+                invalidated = graph.invalidated_by(ArtifactRef(logical_id, previous_version_id))
+            graph.select(
+                logical_id=logical_id, version_id=version_id,
+                previous_version_id=previous_version_id,
+                recorded_invalidated=[item.to_dict() for item in invalidated],
+            )
+            self.store.events.append(
+                "artifact_version_selected", project_id=project["project_id"], run_id=snapshot.run_id,
+                payload={
+                    "logical_id": logical_id,
+                    "version_id": version_id,
+                    "previous_version_id": previous_version_id,
+                    "invalidated": [item.to_dict() for item in invalidated],
+                },
+            )
+            self.store.write_projection()
+            graph, current = self.store.artifact_graph_snapshot()
+            return self._artifact_graph_payload(project, graph, current)
 
     def decide_approval(self, request_id: str, *, decision: str, reviewer: str,
                         expected_last_event_hash: str) -> ProductionSnapshot:

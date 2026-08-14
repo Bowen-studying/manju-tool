@@ -452,6 +452,63 @@ def production_audit_verify(snapshot_dir, verify_hmac, json_output):
         _handle_production_error(exc, json_output=json_output)
 
 
+@cli.group("artifact")
+def production_artifact():
+    """Inspect immutable artifact versions and their dependency graph."""
+
+
+@production_artifact.command("status")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "json_output", is_flag=True)
+def production_artifact_status(project_json, json_output):
+    from manju.production import ProductionError
+    try:
+        _echo_production_payload(_production_service(project_json, assemble_visual_provider=False).get_artifact_graph(), json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@production_artifact.command("register")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--logical-id", required=True)
+@click.option("--path", "artifact_path", required=True, help="Project-relative file path")
+@click.option("--producer-stage", required=True)
+@click.option("--depends-on", multiple=True, help="Dependency JSON: {logical_id, version_id}")
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_artifact_register(project_json, logical_id, artifact_path, producer_stage, depends_on, expected_last_event_hash, json_output):
+    from manju.production import ProductionError
+    try:
+        dependencies = tuple(json.loads(item) for item in depends_on)
+        value = _production_service(project_json, assemble_visual_provider=False).register_artifact(
+            logical_id=logical_id, path=artifact_path, producer_stage=producer_stage,
+            depends_on=dependencies, expected_last_event_hash=expected_last_event_hash,
+        )
+        _echo_production_payload(value, json_output=json_output)
+    except (ProductionError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        if isinstance(exc, ProductionError):
+            _handle_production_error(exc, json_output=json_output)
+        else:
+            _handle_production_error(ProductionError("OPERATION_CONTRACT_INVALID", "depends-on must be valid JSON"), json_output=json_output)
+
+
+@production_artifact.command("select")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--logical-id", required=True)
+@click.option("--version-id", required=True)
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_artifact_select(project_json, logical_id, version_id, expected_last_event_hash, json_output):
+    from manju.production import ProductionError
+    try:
+        value = _production_service(project_json, assemble_visual_provider=False).select_artifact_version(
+            logical_id=logical_id, version_id=version_id, expected_last_event_hash=expected_last_event_hash,
+        )
+        _echo_production_payload(value, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
 # ── 剧本入口 ──────────────────────────────────────────────────────────────────
 
 @cli.command()

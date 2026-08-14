@@ -46,6 +46,8 @@ KNOWN_EVENT_TYPES = {
     "manual_result_imported",
     "manual_cost_reconciled",
     "manual_contractual_tariff_settled",
+    "artifact_registered",
+    "artifact_version_selected",
 }
 
 
@@ -193,6 +195,10 @@ def reduce_events(events: list[dict[str, Any]]) -> ProductionSnapshot:
             valid = initialized and bool(recovered_id) and (
                 not execution_lease_id or recovered_id == execution_lease_id
             )
+        elif event_type in {"artifact_registered", "artifact_version_selected"}:
+            # The ArtifactGraph validates the record, exact dependency closure,
+            # and version transition. Top-level run state is intentionally unchanged.
+            valid = initialized
         elif event_type == "approval_requested":
             request = ApprovalRequest.from_dict(payload.get("approval_request", {}))
             valid = (

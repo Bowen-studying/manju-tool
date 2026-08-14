@@ -77,9 +77,9 @@ def _copy_safe_tree(source: str, destination: str, *, allowed: callable, scan_me
             shutil.copy2(path, target)
 
 
-def _project_evidence_allowed(relative: str, source_relative: str) -> bool:
+def _project_evidence_allowed(relative: str, source_relative: str, artifact_paths: frozenset[str] = frozenset()) -> bool:
     parts = relative.split("/")
-    if relative in {"project.json", source_relative.replace(os.sep, "/"), "production/events.jsonl", "production/state.json"}:
+    if relative in artifact_paths or relative in {"project.json", source_relative.replace(os.sep, "/"), "production/events.jsonl", "production/state.json", "production/artifacts.json"}:
         return True
     if len(parts) == 4 and parts[:3] == ["production", "manual", "dispatches"] and parts[-1].endswith(".json"):
         return True
@@ -129,8 +129,10 @@ def export_audit_snapshot(*, project_json: str, destination: str, worker_result_
 
     os.makedirs(destination)
     source_relative = str((project.get("source") or {}).get("path", ""))
+    graph = ProjectStore(project_json, key_provider=key_provider).artifact_graph()
+    artifact_paths = frozenset(record.path for record in graph._records.values())
     _copy_safe_tree(project_root, os.path.join(destination, "project"),
-                    allowed=lambda relative: _project_evidence_allowed(relative, source_relative))
+                    allowed=lambda relative: _project_evidence_allowed(relative, source_relative, artifact_paths))
     for label, source, allowed in (("worker-result", worker_result_dir, _worker_result_allowed), ("worker-state", worker_state_dir, _worker_state_allowed)):
         if source:
             source = os.path.abspath(source)

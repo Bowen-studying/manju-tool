@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import os
+import stat
 from typing import Any
 
 from manju.production.events import EventStore, HmacKeyProvider
+from manju.production.artifacts import ArtifactGraph
 from manju.production.models import (
     PROJECT_SCHEMA_VERSION,
     ProductionError,
@@ -124,7 +126,66 @@ class ProjectStore:
         return contract
 
     def snapshot(self):
-        return reduce_events(self.events.read())
+        events = self.events.read()
+        graph = ArtifactGraph.from_events(events)
+        self.validate_artifact_files(graph)
+        return reduce_events(events)
 
     def write_projection(self) -> None:
-        atomic_write_json(self.paths.state_file, self.snapshot().to_dict())
+        events = self.events.read()
+        graph = ArtifactGraph.from_events(events)
+        self.validate_artifact_files(graph)
+        atomic_write_json(self.paths.state_file, reduce_events(events).to_dict())
+        atomic_write_json(self.paths.artifacts_file, graph.to_dict())
+
+    def artifact_graph(self) -> ArtifactGraph:
+        graph = ArtifactGraph.from_events(self.events.read())
+        self.validate_artifact_files(graph)
+        return graph
+
+    def artifact_graph_snapshot(self):
+        """Return graph and top-level status reduced from one event read."""
+        events = self.events.read()
+        graph = ArtifactGraph.from_events(events)
+        self.validate_artifact_files(graph)
+        return graph, reduce_events(events)
+
+    def artifact_path(self, relative_path: str) -> str:
+        """Resolve a file below the project while refusing links and reparse points."""
+        if not isinstance(relative_path, str) or os.path.isabs(relative_path):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "artifact path must be project-relative")
+        normalized = relative_path.replace("\\", "/")
+        if os.path.splitdrive(normalized)[0] or ".." in normalized.split("/"):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "artifact path must be project-relative")
+        candidate = os.path.abspath(os.path.join(self.paths.root, normalized))
+        root = os.path.abspath(self.paths.root)
+        try:
+            inside_root = os.path.normcase(os.path.commonpath([root, candidate])) == os.path.normcase(root)
+        except ValueError:
+            inside_root = False
+        if not inside_root:
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "artifact path is outside the project")
+        current = root
+        for part in normalized.split("/"):
+            current = os.path.join(current, part)
+            if not os.path.lexists(current):
+                raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "artifact file is unavailable")
+            value = os.lstat(current)
+            attributes = getattr(value, "st_file_attributes", 0)
+            if stat.S_ISLNK(value.st_mode) or bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)):
+                raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "artifact path cannot contain a link or reparse point")
+        real_root = os.path.normcase(os.path.realpath(root))
+        real_candidate = os.path.normcase(os.path.realpath(candidate))
+        try:
+            inside_real_root = os.path.commonpath([real_root, real_candidate]) == real_root
+        except ValueError:
+            inside_real_root = False
+        if not inside_real_root or not os.path.isfile(candidate):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "artifact file is unavailable")
+        return candidate
+
+    def validate_artifact_files(self, graph: ArtifactGraph) -> None:
+        for record in graph._records.values():
+            path = self.artifact_path(record.path)
+            if f"sha256:{sha256_file(path)}" != record.ref.version_id:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "artifact content no longer matches its registered version")

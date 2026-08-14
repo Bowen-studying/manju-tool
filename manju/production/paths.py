@@ -31,6 +31,10 @@ class ProjectPaths:
         return os.path.join(self.production_dir, "state.json")
 
     @property
+    def artifacts_file(self) -> str:
+        return os.path.join(self.production_dir, "artifacts.json")
+
+    @property
     def lock_file(self) -> str:
         return os.path.join(self.production_dir, ".project.lock")
 
