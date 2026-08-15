@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime
 from typing import Any
 
@@ -51,7 +52,7 @@ KNOWN_EVENT_TYPES = {
 }
 
 
-def reduce_events(events: list[dict[str, Any]]) -> ProductionSnapshot:
+def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
     project_id = ""
     run_id = ""
     status = ProductionStatus.PENDING.value
@@ -530,3 +531,31 @@ def reduce_events(events: list[dict[str, Any]]) -> ProductionSnapshot:
         updated_at=updated_at,
         last_event_hash=last_hash,
     )
+
+
+def reduce_events(events: list[dict[str, Any]]) -> ProductionSnapshot:
+    """Reduce the active run while preserving strict validation within each run."""
+    if not events:
+        return _reduce_single_run(events)
+    from manju.production.revisions import RevisionProjection
+
+    revisions = RevisionProjection.from_events(events)
+    active_run_id = revisions.active_run_id
+    if not active_run_id:
+        # Before the first valid run exists, every event must remain visible to
+        # the original strict state machine; never discard malformed run events.
+        return _reduce_single_run(events)
+    initialized = next((event for event in events if event.get("event_type") == "project_initialized"), None)
+    if initialized is None:
+        raise ProductionError(ReasonCode.PROJECT_EVENT_CHAIN_INVALID.value, "project_initialized is missing")
+    scoped = [initialized]
+    if active_run_id:
+        scoped.extend(
+            event for event in events
+            if event.get("run_id") == active_run_id
+            or (not event.get("run_id") and event.get("event_type") != "project_initialized")
+        )
+    snapshot = _reduce_single_run(scoped)
+    latest = events[-1]
+    return replace(snapshot, updated_at=str(latest.get("occurred_at", snapshot.updated_at)),
+                   last_event_hash=str(latest.get("event_hash", snapshot.last_event_hash)))

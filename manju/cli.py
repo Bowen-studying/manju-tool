@@ -509,6 +509,59 @@ def production_artifact_select(project_json, logical_id, version_id, expected_la
         _handle_production_error(exc, json_output=json_output)
 
 
+@cli.group("revision")
+def production_revision():
+    """Preview and create immutable successor runs."""
+
+
+@production_revision.command("list")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--json", "json_output", is_flag=True)
+def production_revision_list(project_json, json_output):
+    from manju.production import ProductionError
+    try:
+        _echo_production_payload(_production_service(project_json, assemble_visual_provider=False).list_revisions(), json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
+@production_revision.command("preview")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--changed", multiple=True, required=True, help="Current artifact JSON: {logical_id, version_id}")
+@click.option("--json", "json_output", is_flag=True)
+def production_revision_preview(project_json, changed, json_output):
+    from manju.production import ProductionError
+    try:
+        value = _production_service(project_json, assemble_visual_provider=False).preview_revision(
+            changed=tuple(json.loads(item) for item in changed)
+        )
+        _echo_production_payload(value, json_output=json_output)
+    except (ProductionError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        _handle_production_error(exc if isinstance(exc, ProductionError) else ProductionError("OPERATION_CONTRACT_INVALID", "changed must be valid JSON"), json_output=json_output)
+
+
+@production_revision.command("create")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--changed", multiple=True, required=True, help="Current artifact JSON: {logical_id, version_id}")
+@click.option("--requested-by", required=True)
+@click.option("--reason", required=True)
+@click.option("--preview-fingerprint", required=True)
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--revision-id", default="")
+@click.option("--json", "json_output", is_flag=True)
+def production_revision_create(project_json, changed, requested_by, reason, preview_fingerprint, expected_last_event_hash, revision_id, json_output):
+    from manju.production import ProductionError
+    try:
+        value = _production_service(project_json, assemble_visual_provider=False).create_revision(
+            changed=tuple(json.loads(item) for item in changed), requested_by=requested_by, reason=reason,
+            preview_fingerprint=preview_fingerprint, expected_last_event_hash=expected_last_event_hash,
+            revision_id=revision_id,
+        )
+        _echo_production_payload(value, json_output=json_output)
+    except (ProductionError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        _handle_production_error(exc if isinstance(exc, ProductionError) else ProductionError("OPERATION_CONTRACT_INVALID", "changed must be valid JSON"), json_output=json_output)
+
+
 # ── 剧本入口 ──────────────────────────────────────────────────────────────────
 
 @cli.command()

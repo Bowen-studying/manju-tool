@@ -9,6 +9,7 @@ from typing import Any
 
 from manju.production.events import EventStore, HmacKeyProvider
 from manju.production.artifacts import ArtifactGraph
+from manju.production.revisions import RevisionProjection
 from manju.production.models import (
     PROJECT_SCHEMA_VERSION,
     ProductionError,
@@ -123,20 +124,36 @@ class ProjectStore:
         unsigned = {key: value for key, value in contract.items() if key != "contract_fingerprint"}
         if recorded != fingerprint(unsigned):
             raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "run 合同指纹无效")
+        created = [event for event in self.events.read()
+                   if event.get("event_type") == "run_created" and event.get("run_id") == run_id]
+        if len(created) != 1 or (created[0].get("payload") or {}).get("contract_fingerprint") != recorded:
+            raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "run 合同未绑定到事件账本")
+        event_payload = created[0].get("payload") or {}
+        revision = event_payload.get("revision")
+        if revision is not None:
+            if not isinstance(revision, dict) or (
+                contract.get("predecessor_run_id") != revision.get("predecessor_run_id")
+                or contract.get("revision_id") != revision.get("revision_id")
+                or contract.get("reuse_manifest") != revision.get("reuse_manifest")
+            ):
+                raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "successor 合同与 revision 账本不一致")
         return contract
 
     def snapshot(self):
         events = self.events.read()
         graph = ArtifactGraph.from_events(events)
         self.validate_artifact_files(graph)
+        RevisionProjection.from_events(events)
         return reduce_events(events)
 
     def write_projection(self) -> None:
         events = self.events.read()
         graph = ArtifactGraph.from_events(events)
         self.validate_artifact_files(graph)
+        revisions = RevisionProjection.from_events(events)
         atomic_write_json(self.paths.state_file, reduce_events(events).to_dict())
         atomic_write_json(self.paths.artifacts_file, graph.to_dict())
+        atomic_write_json(self.paths.revisions_file, revisions.to_dict())
 
     def artifact_graph(self) -> ArtifactGraph:
         graph = ArtifactGraph.from_events(self.events.read())
@@ -149,6 +166,16 @@ class ProjectStore:
         graph = ArtifactGraph.from_events(events)
         self.validate_artifact_files(graph)
         return graph, reduce_events(events)
+
+    def revisions(self) -> RevisionProjection:
+        return RevisionProjection.from_events(self.events.read())
+
+    def revision_snapshot(self):
+        events = self.events.read()
+        graph = ArtifactGraph.from_events(events)
+        self.validate_artifact_files(graph)
+        revisions = RevisionProjection.from_events(events)
+        return revisions, reduce_events(events)
 
     def artifact_path(self, relative_path: str) -> str:
         """Resolve a file below the project while refusing links and reparse points."""

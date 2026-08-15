@@ -79,7 +79,7 @@ def _copy_safe_tree(source: str, destination: str, *, allowed: callable, scan_me
 
 def _project_evidence_allowed(relative: str, source_relative: str, artifact_paths: frozenset[str] = frozenset()) -> bool:
     parts = relative.split("/")
-    if relative in artifact_paths or relative in {"project.json", source_relative.replace(os.sep, "/"), "production/events.jsonl", "production/state.json", "production/artifacts.json"}:
+    if relative in artifact_paths or relative in {"project.json", source_relative.replace(os.sep, "/"), "production/events.jsonl", "production/state.json", "production/artifacts.json", "production/revisions.json"}:
         return True
     if len(parts) == 4 and parts[:3] == ["production", "manual", "dispatches"] and parts[-1].endswith(".json"):
         return True

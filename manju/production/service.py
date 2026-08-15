@@ -21,7 +21,7 @@ from manju.pipeline.storyboard_supervisor import (
 from manju.production.adapters.storyboard import StoryboardStageAdapter, storyboard_source_sha256
 from manju.production.adapters.visual import VisualStageAdapter
 from manju.production.approvals import ApprovalRequest, Grant, contractual_tariff_usage, create_contractual_tariff
-from manju.production.artifacts import ArtifactGraph, ArtifactRecord
+from manju.production.artifacts import ArtifactGraph, ArtifactRecord, ArtifactRef
 from manju.production.events import HmacKeyProvider
 from manju.production.operations import OperationRecord
 from manju.production.manual_operations import (
@@ -234,6 +234,102 @@ class ProductionService:
         graph, snapshot = self.store.artifact_graph_snapshot()
         return self._artifact_graph_payload(project, graph, snapshot)
 
+    def list_revisions(self) -> dict[str, Any]:
+        project = self.store.load_project()
+        revisions, snapshot = self.store.revision_snapshot()
+        return {
+            "schema_version": "1", "project_id": project["project_id"], "run_id": snapshot.run_id,
+            "status": "ready", "reason": {"code": "REVISION_HISTORY_READY", "message": "修订历史已验证"},
+            "next_actions": [], "last_event_hash": snapshot.last_event_hash,
+            "revision_history": revisions.to_dict(),
+        }
+
+    def _revision_preview(self, *, project: dict[str, Any], changed: tuple[dict[str, Any], ...]) -> dict[str, Any]:
+        graph, snapshot = self.store.artifact_graph_snapshot()
+        if snapshot.status not in {ProductionStatus.COMPLETED.value, ProductionStatus.PAUSED.value,
+                                   ProductionStatus.NEEDS_REVIEW.value, ProductionStatus.FAILED.value}:
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision requires a safe terminal or paused run")
+        requested = tuple(ArtifactRef.from_dict(item) for item in changed)
+        current = tuple(ArtifactRef(item["logical_id"], item["version_id"]) for item in graph.to_dict()["current"])
+        if not requested or len(set(requested)) != len(requested) or not set(requested).issubset(set(current)):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts must be current versions")
+        affected = tuple(sorted(ref for ref, state in graph._states.items() if state == "invalidated"))
+        reused = tuple(sorted(set(current) - set(requested)))
+        preview_fingerprint = fingerprint({
+            "predecessor_run_id": snapshot.run_id,
+            "changed": [item.to_dict() for item in requested],
+            "affected": [item.to_dict() for item in affected],
+            "reuse_manifest": [item.to_dict() for item in reused],
+            "last_event_hash": snapshot.last_event_hash,
+        })
+        return {
+            "schema_version": "1", "project_id": project["project_id"], "run_id": snapshot.run_id,
+            "status": "ready", "reason": {"code": "REVISION_PREVIEW_READY", "message": "修订影响范围已计算"},
+            "next_actions": [{"action": "create_revision", "preview_fingerprint": preview_fingerprint}],
+            "last_event_hash": snapshot.last_event_hash, "preview_fingerprint": preview_fingerprint,
+            "changed": [item.to_dict() for item in requested], "affected_artifacts": [item.to_dict() for item in affected],
+            "reused_artifacts": [item.to_dict() for item in reused], "estimated_paid_operations": [],
+        }
+
+    def preview_revision(self, *, changed: tuple[dict[str, Any], ...]) -> dict[str, Any]:
+        return self._revision_preview(project=self.store.load_project(), changed=changed)
+
+    def create_revision(
+        self, *, changed: tuple[dict[str, Any], ...], requested_by: str, reason: str,
+        preview_fingerprint: str, expected_last_event_hash: str, revision_id: str = "",
+    ) -> dict[str, Any]:
+        """Create an immutable successor-run contract from an exact preview."""
+        with ProjectLock(self.paths.lock_file):
+            project = self.store.load_project()
+            if not requested_by.strip() or not reason.strip() or not self._expected_last_hash_matches(expected_last_event_hash):
+                raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision request is stale or incomplete")
+            preview = self._revision_preview(project=project, changed=changed)
+            if preview["preview_fingerprint"] != preview_fingerprint or preview["last_event_hash"] != expected_last_event_hash:
+                raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "revision preview is stale")
+            predecessor_run_id = preview["run_id"]
+            successor_run_id = f"run_{uuid.uuid4().hex}"
+            revision_id = revision_id or f"rev_{uuid.uuid4().hex}"
+            if any(item["revision_id"] == revision_id for item in self.store.revisions().to_dict()["revisions"]):
+                raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision_id already exists")
+            contract = self._create_contract(project, successor_run_id, predecessor_run_id=predecessor_run_id,
+                                             revision_id=revision_id, reuse_manifest=tuple(preview["reused_artifacts"]))
+            os.makedirs(self.paths.run_dir(successor_run_id), exist_ok=False)
+            atomic_write_json(self.paths.contract_file(successor_run_id), contract)
+            revision = {
+                "revision_id": revision_id, "predecessor_run_id": predecessor_run_id,
+                "successor_run_id": successor_run_id, "requested_by": requested_by,
+                "reason": reason, "changed": preview["changed"], "affected": preview["affected_artifacts"],
+                "reuse_manifest": preview["reused_artifacts"], "preview_fingerprint": preview_fingerprint,
+            }
+            try:
+                self.store.events.append("run_created", project_id=project["project_id"], run_id=successor_run_id,
+                                         payload={"contract_fingerprint": contract["contract_fingerprint"], "dag_version": contract["dag_version"],
+                                                  "predecessor_run_id": predecessor_run_id, "revision_id": revision_id,
+                                                  "revision": revision})
+            except BaseException:
+                # An append error is ambiguous: it can be raised after the JSONL
+                # record has reached durable storage. Delete only after a fresh
+                # ledger read proves this exact successor contract was not
+                # committed. Unknown read state is deliberately preserved for
+                # recovery rather than risking deletion of the active contract.
+                committed = True
+                try:
+                    committed = any(
+                        event.get("event_type") == "run_created"
+                        and event.get("run_id") == successor_run_id
+                        and (event.get("payload") or {}).get("contract_fingerprint") == contract["contract_fingerprint"]
+                        for event in self.store.events.read()
+                    )
+                except BaseException:
+                    committed = True
+                if not committed:
+                    # This directory was created by this invocation and has no
+                    # ledger authority. Remove only this exact known target.
+                    shutil.rmtree(self.paths.run_dir(successor_run_id), ignore_errors=True)
+                raise
+            self.store.write_projection()
+            return self.list_revisions()
+
     def register_artifact(
         self,
         *,
@@ -338,6 +434,9 @@ class ProductionService:
             if approval is None or approval["status"] != "approved":
                 raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "approval was not approved")
             request = ApprovalRequest.from_dict(approval["approval_request"])
+            if (snapshot.status != ProductionStatus.AWAITING_APPROVAL.value
+                    or request.project_id != project["project_id"] or request.run_id != snapshot.run_id):
+                raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "approval does not bind the active run")
             recorded_at = utc_now()
             if datetime.now(timezone.utc) > datetime.fromisoformat(request.expires_at.replace("Z", "+00:00")):
                 raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "approval expired")
@@ -626,7 +725,8 @@ class ProductionService:
             _, model_name, _ = get_ai_config()
         return model_name or "unconfigured"
 
-    def _create_contract(self, project: dict[str, Any], run_id: str) -> dict[str, Any]:
+    def _create_contract(self, project: dict[str, Any], run_id: str, *, predecessor_run_id: str = "",
+                         revision_id: str = "", reuse_manifest: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
         storyboard = project["production"]["storyboard"]
         visual = project["production"]["visual"]
         contract = {
@@ -655,6 +755,9 @@ class ProductionService:
             "integrity": project.get("integrity", {}),
             "storyboard_settings": storyboard,
             "visual_settings": visual,
+            "predecessor_run_id": predecessor_run_id,
+            "revision_id": revision_id,
+            "reuse_manifest": list(reuse_manifest),
         }
         contract["contract_fingerprint"] = fingerprint(contract)
         return contract
