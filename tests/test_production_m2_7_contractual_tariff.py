@@ -45,7 +45,10 @@ def _service(tmp_path, monkeypatch, *, maximum="5", tariff_amount="3"):
 
 
 def _import_success(service, granted, tmp_path):
-    prepared = service.prepare_manual_dispatch(expected_last_event_hash=granted.last_event_hash)
+    # Callers may record non-authority graph facts after a Grant. Dispatch must
+    # still use the current optimistic-concurrency token rather than a stale
+    # historical Grant snapshot.
+    prepared = service.prepare_manual_dispatch(expected_last_event_hash=service.get_status().last_event_hash)
     dispatch = ManualDispatchPackage.from_dict(prepared["dispatch"])
     result_dir = tmp_path / "result"
     result, _ = execute_fixture(dispatch, state_dir=str(tmp_path / "worker-state"), output_dir=str(result_dir))

@@ -492,6 +492,28 @@ def production_artifact_register(project_json, logical_id, artifact_path, produc
             _handle_production_error(ProductionError("OPERATION_CONTRACT_INVALID", "depends-on must be valid JSON"), json_output=json_output)
 
 
+@production_artifact.command("candidate")
+@click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
+@click.option("--logical-id", required=True)
+@click.option("--path", "artifact_path", required=True, help="Project-relative replacement file path")
+@click.option("--producer-stage", default="revision_candidate", show_default=True)
+@click.option("--depends-on", multiple=True, help="Dependency JSON: {logical_id, version_id}")
+@click.option("--expected-last-event-hash", required=True)
+@click.option("--json", "json_output", is_flag=True)
+def production_artifact_candidate(project_json, logical_id, artifact_path, producer_stage, depends_on, expected_last_event_hash, json_output):
+    """Register a replacement without modifying the completed predecessor run."""
+    from manju.production import ProductionError
+    try:
+        dependencies = tuple(json.loads(item) for item in depends_on)
+        value = _production_service(project_json, assemble_visual_provider=False).register_revision_candidate(
+            logical_id=logical_id, path=artifact_path, producer_stage=producer_stage,
+            depends_on=dependencies, expected_last_event_hash=expected_last_event_hash,
+        )
+        _echo_production_payload(value, json_output=json_output)
+    except (ProductionError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        _handle_production_error(exc if isinstance(exc, ProductionError) else ProductionError("OPERATION_CONTRACT_INVALID", "depends-on must be valid JSON"), json_output=json_output)
+
+
 @production_artifact.command("select")
 @click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
 @click.option("--logical-id", required=True)

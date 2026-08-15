@@ -258,7 +258,8 @@ class VisualStageAdapter:
         return ApprovalRequest.from_dict(value)
 
     def plan(self, *, project_id: str, run_id: str, stage_run_id: str, output_dir: str,
-             storyboard_artifact: dict[str, str], settings: dict[str, Any]) -> ApprovalRequest:
+             storyboard_artifact: dict[str, str], settings: dict[str, Any],
+             artifact_versions: tuple[dict[str, str], ...] = ()) -> ApprovalRequest:
         os.makedirs(output_dir, exist_ok=True)
         operation_id = "visual-" + run_id.removeprefix("run_")
         provider_request = settings.get("provider_request")
@@ -268,12 +269,16 @@ class VisualStageAdapter:
         if provider_request is not None:
             encoded_request = json.dumps(provider_request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             request_fingerprint = "sha256:" + hashlib.sha256(encoded_request).hexdigest()
-        input_material = operation_id + storyboard_artifact["version_id"] + request_fingerprint
+        approved_artifacts = (dict(storyboard_artifact), *tuple(dict(item) for item in artifact_versions))
+        input_material = json.dumps({
+            "operation_id": operation_id, "artifacts": approved_artifacts,
+            "provider_request_fingerprint": request_fingerprint,
+        }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
         request = ApprovalRequest(
             request_id="approval-" + run_id.removeprefix("run_"), project_id=project_id, run_id=run_id,
             stage="visual", stage_run_id=stage_run_id, kind="paid_visual_batch",
-            state_fingerprint="sha256:" + hashlib.sha256(json.dumps(storyboard_artifact, sort_keys=True).encode("utf-8")).hexdigest(),
-            artifact_versions=(dict(storyboard_artifact),),
+            state_fingerprint="sha256:" + hashlib.sha256(json.dumps(approved_artifacts, sort_keys=True).encode("utf-8")).hexdigest(),
+            artifact_versions=approved_artifacts,
             operation_intents=({"operation_id": operation_id, "input_fingerprint": "sha256:" + hashlib.sha256(input_material.encode("utf-8")).hexdigest(), "kind": str(settings.get("operation_kind", "mock_image")),
                                 **({"provider_request": provider_request, "provider_request_fingerprint": request_fingerprint} if provider_request is not None else {})},),
              maximum_paid_calls=settings["maximum_paid_calls"], maximum_amount=settings["maximum_amount"],

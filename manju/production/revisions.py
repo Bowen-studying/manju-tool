@@ -25,6 +25,26 @@ def _refs(value: Any) -> tuple[ArtifactRef, ...]:
     return result
 
 
+def _plan(graph: ArtifactGraph, affected: tuple[ArtifactRef, ...], changed: tuple[ArtifactRef, ...] = ()) -> tuple[dict[str, Any], ...]:
+    """Deterministically map graph invalidation to the two production stages."""
+    result = []
+    changed_ids = {ref.logical_id for ref in changed}
+    for stage in ("storyboard", "visual"):
+        stage_refs = tuple(sorted(
+            ref for ref, record in graph._records.items() if record.producer_stage == stage
+        ))
+        # Stage outputs predating M3.3 may not yet be registered in the graph.
+        # Source/style roots therefore retain their explicit production-DAG
+        # meaning as a safe fallback until all stage outputs are registered.
+        root_change = (stage == "storyboard" and "source.script" in changed_ids) or (
+            stage == "visual" and bool({"source.script", "style.reference"} & changed_ids)
+        )
+        action = "regenerate" if set(stage_refs) & set(affected) or root_change else "reuse"
+        result.append({"stage": stage, "action": action,
+                       "artifact_versions": [item.to_dict() for item in stage_refs if item not in affected]})
+    return tuple(result)
+
+
 @dataclass(frozen=True)
 class RevisionRecord:
     revision_id: str
@@ -37,9 +57,12 @@ class RevisionRecord:
     reused: tuple[ArtifactRef, ...]
     preview_fingerprint: str
     status: str = "created"
+    predecessor_selection: tuple[ArtifactRef, ...] = ()
+    successor_selection: tuple[ArtifactRef, ...] = ()
+    execution_plan: tuple[dict[str, Any], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        result = {
             "revision_id": self.revision_id,
             "predecessor_run_id": self.predecessor_run_id,
             "successor_run_id": self.successor_run_id,
@@ -51,6 +74,13 @@ class RevisionRecord:
             "preview_fingerprint": self.preview_fingerprint,
             "status": self.status,
         }
+        if self.predecessor_selection:
+            result.update({
+                "predecessor_selection": [item.to_dict() for item in self.predecessor_selection],
+                "successor_selection": [item.to_dict() for item in self.successor_selection],
+                "execution_plan": list(self.execution_plan),
+            })
+        return result
 
     @classmethod
     def from_payload(cls, value: Any) -> "RevisionRecord":
@@ -64,9 +94,30 @@ class RevisionRecord:
         reused = _refs(value.get("reuse_manifest"))
         if not changed or set(affected) & set(reused):
             raise _invalid("revision scope is invalid")
+        predecessor_selection = _refs(value.get("predecessor_selection", []))
+        successor_selection = _refs(value.get("successor_selection", []))
+        raw_plan = value.get("execution_plan", [])
+        if predecessor_selection:
+            if not successor_selection or not isinstance(raw_plan, list) or len(raw_plan) != 2:
+                raise _invalid("revision M3.3 selection or execution plan is invalid")
+            expected_stages = ("storyboard", "visual")
+            if any(not isinstance(item, dict) or item.get("stage") != stage
+                   or item.get("action") not in {"reuse", "regenerate"}
+                   or not isinstance(item.get("artifact_versions"), list)
+                   for item, stage in zip(raw_plan, expected_stages)):
+                raise _invalid("revision execution plan is invalid")
+            execution_plan = tuple({
+                "stage": item["stage"], "action": item["action"],
+                "artifact_versions": [ArtifactRef.from_dict(ref).to_dict() for ref in item["artifact_versions"]],
+            } for item in raw_plan)
+        elif successor_selection or raw_plan:
+            raise _invalid("legacy revision cannot carry a partial M3.3 scope")
+        else:
+            execution_plan = ()
         return cls(value["revision_id"], value["predecessor_run_id"], value["successor_run_id"],
                    value["requested_by"], value["reason"], changed, affected, reused,
-                   value["preview_fingerprint"])
+                   value["preview_fingerprint"], predecessor_selection=predecessor_selection,
+                   successor_selection=successor_selection, execution_plan=execution_plan)
 
 
 class RevisionProjection:
@@ -102,20 +153,37 @@ class RevisionProjection:
                         raise _invalid("revision predecessor is not the active run")
                     graph = ArtifactGraph.from_events(prefix)
                     current = {ArtifactRef(item["logical_id"], item["version_id"]) for item in graph.to_dict()["current"]}
-                    all_records = set(graph._records)
-                    invalidated = {ref for ref, state in graph._states.items() if state == "invalidated"}
-                    if (not set(record.changed).issubset(current) or not set(record.affected).issubset(all_records)
-                            or set(record.affected) != invalidated):
-                        raise _invalid("revision references unavailable artifact versions")
-                    if set(record.reused) != current - set(record.changed):
-                        raise _invalid("revision reuse manifest is not the current unaffected set")
-                    expected = fingerprint({
-                        "predecessor_run_id": record.predecessor_run_id,
-                        "changed": [item.to_dict() for item in record.changed],
-                        "affected": [item.to_dict() for item in record.affected],
-                        "reuse_manifest": [item.to_dict() for item in record.reused],
-                        "last_event_hash": prefix[-1]["event_hash"] if prefix else "",
-                    })
+                    if record.predecessor_selection:
+                        predecessor, affected, successor, reused = graph.revision_scope(record.changed)
+                        if (record.predecessor_selection != predecessor or record.affected != affected
+                                or record.successor_selection != successor or record.reused != reused
+                                or record.execution_plan != _plan(graph, affected, record.changed)):
+                            raise _invalid("revision M3.3 scope is not deterministic")
+                        expected = fingerprint({
+                            "predecessor_run_id": record.predecessor_run_id,
+                            "predecessor_selection": [item.to_dict() for item in predecessor],
+                            "changed": [item.to_dict() for item in record.changed],
+                            "affected": [item.to_dict() for item in affected],
+                            "successor_selection": [item.to_dict() for item in successor],
+                            "reuse_manifest": [item.to_dict() for item in reused],
+                            "execution_plan": list(_plan(graph, affected, record.changed)),
+                            "last_event_hash": prefix[-1]["event_hash"] if prefix else "",
+                        })
+                    else:
+                        all_records = set(graph._records)
+                        invalidated = {ref for ref, state in graph._states.items() if state == "invalidated"}
+                        if (not set(record.changed).issubset(current) or not set(record.affected).issubset(all_records)
+                                or set(record.affected) != invalidated):
+                            raise _invalid("revision references unavailable artifact versions")
+                        if set(record.reused) != current - set(record.changed):
+                            raise _invalid("revision reuse manifest is not the current unaffected set")
+                        expected = fingerprint({
+                            "predecessor_run_id": record.predecessor_run_id,
+                            "changed": [item.to_dict() for item in record.changed],
+                            "affected": [item.to_dict() for item in record.affected],
+                            "reuse_manifest": [item.to_dict() for item in record.reused],
+                            "last_event_hash": prefix[-1]["event_hash"] if prefix else "",
+                        })
                     if record.preview_fingerprint != expected:
                         raise _invalid("revision preview fingerprint is invalid")
                     projection._records[revision_id] = replace(record, status="superseded_predecessor")

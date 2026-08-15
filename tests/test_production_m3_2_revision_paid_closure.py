@@ -33,8 +33,28 @@ def _register_select(service, *, logical_id: str, name: str, content: bytes) -> 
     return version
 
 
+def _register_candidate(service, *, logical_id: str, name: str, content: bytes) -> str:
+    path = os.path.join(service.paths.outputs_dir, name)
+    with open(path, "wb") as handle:
+        handle.write(content)
+    registered = service.register_revision_candidate(
+        logical_id=logical_id,
+        path=os.path.relpath(path, service.paths.root),
+        producer_stage="m3_2_fixture_candidate",
+        expected_last_event_hash=service.get_artifact_graph()["last_event_hash"],
+    )
+    return next(
+        item["version_id"]
+        for item in registered["graph"]["artifacts"]
+        if item["logical_id"] == logical_id and item["state"] == "available"
+    )
+
+
 def test_completed_predecessor_revision_requires_new_grant_and_settles_one_successor_operation(tmp_path, monkeypatch):
     service, predecessor_grant, _project = _service(tmp_path, monkeypatch)
+
+    _register_select(service, logical_id="source.script", name="source-v1.txt", content=b"v1")
+    style_v1 = _register_select(service, logical_id="style.reference", name="style-v1.txt", content=b"style")
 
     # Complete the predecessor through the fixture worker. Its paid authority
     # is historical before any successor is created.
@@ -46,9 +66,7 @@ def test_completed_predecessor_revision_requires_new_grant_and_settles_one_succe
     predecessor = service.run_until_blocked()
     assert predecessor.status == "completed"
 
-    _register_select(service, logical_id="source.script", name="source-v1.txt", content=b"v1")
-    style_v1 = _register_select(service, logical_id="style.reference", name="style-v1.txt", content=b"style")
-    source_v2 = _register_select(service, logical_id="source.script", name="source-v2.txt", content=b"v2")
+    source_v2 = _register_candidate(service, logical_id="source.script", name="source-v2.txt", content=b"v2")
 
     preview = service.preview_revision(changed=({"logical_id": "source.script", "version_id": source_v2},))
     assert preview["run_id"] == predecessor.run_id

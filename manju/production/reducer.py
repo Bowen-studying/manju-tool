@@ -123,12 +123,23 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             )
         event_project_id = str(event.get("project_id", ""))
         event_run_id = str(event.get("run_id", ""))
+        raw_payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        project_candidate = (
+            not event_run_id
+            and event_type == "artifact_registered"
+            and raw_payload.get("revision_candidate") is True
+            and isinstance(raw_payload.get("artifact"), dict)
+            and isinstance(raw_payload["artifact"].get("producer"), dict)
+            and raw_payload["artifact"]["producer"].get("run_id") == ""
+        )
         if initialized and event_project_id != project_id:
             raise ProductionError(
                 ReasonCode.PROJECT_EVENT_CHAIN_INVALID.value,
                 f"事件 project_id 不一致: sequence {event.get('sequence')}",
             )
-        if run_created and event_run_id != run_id:
+        # Candidates are the only project-scoped artifact facts. Selection is
+        # never project-scoped: M3.3 performs it only inside run_created.
+        if run_created and event_run_id != run_id and not project_candidate:
             raise ProductionError(
                 ReasonCode.PROJECT_EVENT_CHAIN_INVALID.value,
                 f"事件 run_id 不一致: sequence {event.get('sequence')}",
@@ -140,7 +151,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             )
         project_id = event_project_id or project_id
         run_id = event_run_id or run_id
-        payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+        payload = raw_payload
         updated_at = str(event.get("occurred_at", updated_at))
         last_hash = str(event.get("event_hash", last_hash))
 
@@ -199,7 +210,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type in {"artifact_registered", "artifact_version_selected"}:
             # The ArtifactGraph validates the record, exact dependency closure,
             # and version transition. Top-level run state is intentionally unchanged.
-            valid = initialized
+            valid = initialized and (bool(event_run_id) or project_candidate or not run_created)
         elif event_type == "approval_requested":
             request = ApprovalRequest.from_dict(payload.get("approval_request", {}))
             valid = (

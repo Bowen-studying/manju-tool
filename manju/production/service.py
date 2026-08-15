@@ -251,25 +251,96 @@ class ProductionService:
             raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision requires a safe terminal or paused run")
         requested = tuple(ArtifactRef.from_dict(item) for item in changed)
         current = tuple(ArtifactRef(item["logical_id"], item["version_id"]) for item in graph.to_dict()["current"])
-        if not requested or len(set(requested)) != len(requested) or not set(requested).issubset(set(current)):
-            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts must be current versions")
-        affected = tuple(sorted(ref for ref, state in graph._states.items() if state == "invalidated"))
-        reused = tuple(sorted(set(current) - set(requested)))
-        preview_fingerprint = fingerprint({
+        if not requested or len(set(requested)) != len(requested):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts are invalid")
+        is_candidate_revision = all(graph._states.get(item) == "available" for item in requested)
+        if is_candidate_revision:
+            predecessor_selection, affected, successor_selection, reused = graph.revision_scope(requested)
+            execution_plan = self._revision_execution_plan(graph, affected, requested)
+        elif set(requested).issubset(set(current)):
+            # Backward-compatible M3.1 history: the version was already selected
+            # before preview. New M3.3 callers must use revision candidates.
+            predecessor_selection, successor_selection, execution_plan = (), (), ()
+            affected = tuple(sorted(ref for ref, state in graph._states.items() if state == "invalidated"))
+            reused = tuple(sorted(set(current) - set(requested)))
+        else:
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts must be candidates or current versions")
+        fingerprint_payload = {
             "predecessor_run_id": snapshot.run_id,
             "changed": [item.to_dict() for item in requested],
             "affected": [item.to_dict() for item in affected],
             "reuse_manifest": [item.to_dict() for item in reused],
             "last_event_hash": snapshot.last_event_hash,
-        })
+        }
+        if is_candidate_revision:
+            fingerprint_payload.update({
+                "predecessor_selection": [item.to_dict() for item in predecessor_selection],
+                "successor_selection": [item.to_dict() for item in successor_selection],
+                "execution_plan": execution_plan,
+            })
+        preview_fingerprint = fingerprint(fingerprint_payload)
         return {
             "schema_version": "1", "project_id": project["project_id"], "run_id": snapshot.run_id,
             "status": "ready", "reason": {"code": "REVISION_PREVIEW_READY", "message": "修订影响范围已计算"},
             "next_actions": [{"action": "create_revision", "preview_fingerprint": preview_fingerprint}],
             "last_event_hash": snapshot.last_event_hash, "preview_fingerprint": preview_fingerprint,
             "changed": [item.to_dict() for item in requested], "affected_artifacts": [item.to_dict() for item in affected],
-            "reused_artifacts": [item.to_dict() for item in reused], "estimated_paid_operations": [],
+            "reused_artifacts": [item.to_dict() for item in reused],
+            "predecessor_selection": [item.to_dict() for item in predecessor_selection],
+            "successor_selection": [item.to_dict() for item in successor_selection],
+            "execution_plan": execution_plan,
+            "estimated_paid_operations": [item for item in execution_plan if item["stage"] == "visual" and item["action"] == "regenerate"],
         }
+
+    @staticmethod
+    def _revision_execution_plan(graph: ArtifactGraph, affected: tuple[ArtifactRef, ...], changed: tuple[ArtifactRef, ...]) -> list[dict[str, Any]]:
+        affected_set = set(affected)
+        changed_ids = {ref.logical_id for ref in changed}
+        return [
+            {
+                "stage": stage,
+                "action": "regenerate" if (
+                    any(record.producer_stage == stage and ref in affected_set for ref, record in graph._records.items())
+                    or (stage == "storyboard" and "source.script" in changed_ids)
+                    or (stage == "visual" and bool({"source.script", "style.reference"} & changed_ids))
+                ) else "reuse",
+                "artifact_versions": [ref.to_dict() for ref, record in sorted(graph._records.items())
+                                      if record.producer_stage == stage and ref not in affected_set],
+            }
+            for stage in ("storyboard", "visual")
+        ]
+
+    @staticmethod
+    def _stage_execution_action(contract: dict[str, Any], stage: str) -> str:
+        for item in contract.get("execution_plan", []):
+            if isinstance(item, dict) and item.get("stage") == stage:
+                return str(item.get("action"))
+        return "regenerate"
+
+    def _reuse_predecessor_stage(self, *, project: dict[str, Any], snapshot: ProductionSnapshot,
+                                 contract: dict[str, Any], events: list[dict[str, Any]], stage: str) -> ProductionSnapshot:
+        """Record verified stage reuse without scheduling a Provider operation."""
+        predecessor = str(contract.get("predecessor_run_id", ""))
+        terminal = next((event for event in reversed(events)
+                         if event.get("run_id") == predecessor and event.get("event_type") == "stage_completed"
+                         and (event.get("payload") or {}).get("stage") == stage), None)
+        if terminal is None:
+            raise ProductionError(ReasonCode.DEPENDENCY_UNSATISFIED.value, f"cannot reuse missing predecessor {stage}")
+        payload = dict(terminal.get("payload") or {})
+        original_stage_run_id = str(payload.get("stage_run_id", ""))
+        if not original_stage_run_id:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "reused stage has no authority")
+        stage_run_id = f"reused-{stage}-{snapshot.run_id.removeprefix('run_')}"
+        if not has_event(events, snapshot.run_id, "stage_scheduled", stage):
+            self.store.events.append("stage_scheduled", project_id=project["project_id"], run_id=snapshot.run_id,
+                                     payload={"stage": stage, "stage_invocation_id": stage_run_id})
+        if not has_event(events, snapshot.run_id, "stage_run_attached", stage):
+            self.store.events.append("stage_run_attached", project_id=project["project_id"], run_id=snapshot.run_id,
+                                     payload={"stage": stage, "stage_run_id": stage_run_id})
+        payload.update({"stage": stage, "stage_run_id": stage_run_id,
+                        "reused_from": {"run_id": predecessor, "stage_run_id": original_stage_run_id}})
+        self.store.events.append("stage_completed", project_id=project["project_id"], run_id=snapshot.run_id, payload=payload)
+        return self._snapshot_and_project()
 
     def preview_revision(self, *, changed: tuple[dict[str, Any], ...]) -> dict[str, Any]:
         return self._revision_preview(project=self.store.load_project(), changed=changed)
@@ -292,7 +363,10 @@ class ProductionService:
             if any(item["revision_id"] == revision_id for item in self.store.revisions().to_dict()["revisions"]):
                 raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision_id already exists")
             contract = self._create_contract(project, successor_run_id, predecessor_run_id=predecessor_run_id,
-                                             revision_id=revision_id, reuse_manifest=tuple(preview["reused_artifacts"]))
+                                             revision_id=revision_id, reuse_manifest=tuple(preview["reused_artifacts"]),
+                                             predecessor_selection=tuple(preview["predecessor_selection"]),
+                                             successor_selection=tuple(preview["successor_selection"]),
+                                             execution_plan=tuple(preview["execution_plan"]))
             os.makedirs(self.paths.run_dir(successor_run_id), exist_ok=False)
             atomic_write_json(self.paths.contract_file(successor_run_id), contract)
             revision = {
@@ -301,6 +375,12 @@ class ProductionService:
                 "reason": reason, "changed": preview["changed"], "affected": preview["affected_artifacts"],
                 "reuse_manifest": preview["reused_artifacts"], "preview_fingerprint": preview_fingerprint,
             }
+            if preview["predecessor_selection"]:
+                revision.update({
+                    "predecessor_selection": preview["predecessor_selection"],
+                    "successor_selection": preview["successor_selection"],
+                    "execution_plan": preview["execution_plan"],
+                })
             try:
                 self.store.events.append("run_created", project_id=project["project_id"], run_id=successor_run_id,
                                          payload={"contract_fingerprint": contract["contract_fingerprint"], "dag_version": contract["dag_version"],
@@ -346,6 +426,10 @@ class ProductionService:
                 raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "last event hash changed")
             absolute_path = self.store.artifact_path(path)
             snapshot = self.store.snapshot()
+            if snapshot.status in {ProductionStatus.COMPLETED.value, ProductionStatus.NEEDS_REVIEW.value,
+                                   ProductionStatus.FAILED.value}:
+                raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value,
+                                      "completed predecessor requires a revision candidate")
             record = ArtifactRecord.from_dict({
                 "logical_id": logical_id,
                 "version_id": f"sha256:{sha256_file(absolute_path)}",
@@ -363,6 +447,36 @@ class ProductionService:
             graph, current = self.store.artifact_graph_snapshot()
             return self._artifact_graph_payload(project, graph, current)
 
+    def register_revision_candidate(
+        self, *, logical_id: str, path: str, producer_stage: str, depends_on: tuple[dict[str, Any], ...] = (),
+        expected_last_event_hash: str,
+    ) -> dict[str, Any]:
+        """Register an available replacement without mutating a completed run."""
+        with ProjectLock(self.paths.lock_file):
+            project = self.store.load_project()
+            snapshot = self.store.snapshot()
+            if (not self._expected_last_hash_matches(expected_last_event_hash)
+                    or snapshot.status not in {ProductionStatus.COMPLETED.value, ProductionStatus.PAUSED.value,
+                                               ProductionStatus.NEEDS_REVIEW.value, ProductionStatus.FAILED.value}):
+                raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "revision candidate requires a safe predecessor")
+            absolute_path = self.store.artifact_path(path)
+            record = ArtifactRecord.from_dict({
+                "logical_id": logical_id,
+                "version_id": f"sha256:{sha256_file(absolute_path)}",
+                "path": os.path.relpath(absolute_path, self.paths.root),
+                "producer": {"stage": producer_stage or "revision_candidate", "run_id": ""},
+                "depends_on": list(depends_on),
+            })
+            graph = self.store.artifact_graph()
+            graph.register(record)
+            self.store.events.append(
+                "artifact_registered", project_id=project["project_id"], run_id="",
+                payload={"artifact": record.to_dict(state="available"), "revision_candidate": True},
+            )
+            self.store.write_projection()
+            graph, current = self.store.artifact_graph_snapshot()
+            return self._artifact_graph_payload(project, graph, current)
+
     def select_artifact_version(
         self, *, logical_id: str, version_id: str, expected_last_event_hash: str
     ) -> dict[str, Any]:
@@ -372,6 +486,9 @@ class ProductionService:
             if not self._expected_last_hash_matches(expected_last_event_hash):
                 raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "last event hash changed")
             snapshot = self.store.snapshot()
+            if snapshot.status in {ProductionStatus.COMPLETED.value, ProductionStatus.NEEDS_REVIEW.value,
+                                   ProductionStatus.FAILED.value}:
+                raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "completed predecessor requires a revision candidate")
             graph = self.store.artifact_graph()
             previous_version_id = graph.current_version(logical_id)
             target = graph.get(logical_id, version_id)
@@ -726,7 +843,10 @@ class ProductionService:
         return model_name or "unconfigured"
 
     def _create_contract(self, project: dict[str, Any], run_id: str, *, predecessor_run_id: str = "",
-                         revision_id: str = "", reuse_manifest: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
+                         revision_id: str = "", reuse_manifest: tuple[dict[str, Any], ...] = (),
+                         predecessor_selection: tuple[dict[str, Any], ...] = (),
+                         successor_selection: tuple[dict[str, Any], ...] = (),
+                         execution_plan: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
         storyboard = project["production"]["storyboard"]
         visual = project["production"]["visual"]
         contract = {
@@ -758,6 +878,9 @@ class ProductionService:
             "predecessor_run_id": predecessor_run_id,
             "revision_id": revision_id,
             "reuse_manifest": list(reuse_manifest),
+            "predecessor_selection": list(predecessor_selection),
+            "successor_selection": list(successor_selection),
+            "execution_plan": list(execution_plan),
         }
         contract["contract_fingerprint"] = fingerprint(contract)
         return contract
@@ -888,6 +1011,11 @@ class ProductionService:
                     ReasonCode.STAGE_INTEGRITY_FAILED.value,
                     "阶段产物缺失、越界或内容已改变",
                 )
+        if payload.get("reused_from"):
+            # The predecessor's authority files were verified above by their
+            # recorded hashes. A reused stage deliberately has no successor-
+            # local adapter directory to inspect.
+            return
         if stage == "storyboard":
             scheduled_id = f"storyboard-{snapshot.run_id.removeprefix('run_')}"
             output_dir = self.paths.storyboard_dir(snapshot.run_id, scheduled_id)
@@ -1156,6 +1284,11 @@ class ProductionService:
                         run_id=snapshot.run_id, payload={},
                     )
                     return self._snapshot_and_project()
+                if action in {"advance_storyboard", "advance_visual"} and contract is not None:
+                    stage = "storyboard" if action == "advance_storyboard" else "visual"
+                    if self._stage_execution_action(contract, stage) == "reuse":
+                        return self._reuse_predecessor_stage(project=project, snapshot=snapshot, contract=contract,
+                                                             events=events, stage=stage)
                 if action == "advance_visual" and contract is not None:
                     self._configure_visual_receipt_signer(project)
                     run_id = snapshot.run_id
@@ -1184,6 +1317,8 @@ class ProductionService:
                             project_id=project["project_id"], run_id=run_id, stage_run_id=stage_run_id,
                             output_dir=output_dir, storyboard_artifact={"artifact_id": "storyboard", "version_id": str(first_artifact["version_id"])},
                             settings=project["production"]["visual"],
+                            artifact_versions=tuple({"artifact_id": item["logical_id"], "version_id": item["version_id"]}
+                                                    for item in contract.get("successor_selection", [])),
                         )
                         key_id = str(project.get("integrity", {}).get("hmac_key_id", ""))
                         self.store.events.append("approval_requested", project_id=project["project_id"], run_id=run_id,

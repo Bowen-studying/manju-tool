@@ -103,6 +103,14 @@ class ArtifactGraph:
                     previous_version_id=payload.get("previous_version_id", ""),
                     recorded_invalidated=payload.get("invalidated"),
                 )
+            elif event_type == "run_created" and isinstance(payload.get("revision"), dict):
+                # M3.3 makes candidate selection part of the successor's only
+                # authoritative creation event.  Historical M3.1 revisions do
+                # not carry this field and retain their original projection.
+                selection = payload["revision"].get("successor_selection")
+                changed = payload["revision"].get("changed")
+                if selection is not None:
+                    graph.apply_revision_selection(changed)
         return graph
 
     def register(self, record: ArtifactRecord) -> None:
@@ -127,6 +135,74 @@ class ArtifactGraph:
                     changed = True
         affected.remove(ref)
         return tuple(sorted(affected))
+
+    def revision_scope(self, changed: Iterable[ArtifactRef]) -> tuple[tuple[ArtifactRef, ...], tuple[ArtifactRef, ...], tuple[ArtifactRef, ...], tuple[ArtifactRef, ...]]:
+        """Return predecessor, affected, successor and reusable selections.
+
+        Candidate versions remain ``available`` until this scope is committed by
+        a successor ``run_created`` event, so a completed predecessor is never
+        retroactively selected or credited as their producer.
+        """
+        requested = tuple(changed)
+        current = tuple(sorted(self._current.values()))
+        if not requested or len(set(requested)) != len(requested):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision candidates are invalid")
+        previous_by_id = {item.logical_id: item for item in current}
+        if any(
+            item.logical_id not in previous_by_id
+            or item not in self._records
+            or self._states[item] != "available"
+            for item in requested
+        ):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision candidates must be available replacements")
+        replacement_ids = {item.logical_id for item in requested}
+        if any(
+            dependency.logical_id in replacement_ids
+            for item in requested
+            for dependency in self._records[item].depends_on
+        ):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value,
+                                  "revision candidates cannot depend on a version replaced in the same revision")
+        affected = tuple(sorted({
+            downstream
+            for item in requested
+            for downstream in self.invalidated_by(previous_by_id[item.logical_id])
+        }))
+        if set(requested) & set(affected):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value,
+                                  "revision candidate depends on its own invalidation closure")
+        successor = set(current)
+        successor.difference_update(previous_by_id[item.logical_id] for item in requested)
+        successor.difference_update(affected)
+        successor.update(requested)
+        successor_selection = tuple(sorted(successor))
+        reused = tuple(sorted(set(successor_selection) - set(requested)))
+        return current, affected, successor_selection, reused
+
+    def apply_revision_selection(self, changed: Any) -> tuple[ArtifactRef, ...]:
+        """Apply the atomic M3.3 successor selection encoded in run_created."""
+        if not isinstance(changed, list):
+            raise _invalid("revision changed artifacts are invalid")
+        requested = tuple(ArtifactRef.from_dict(item) for item in changed)
+        _current, affected, successor, _reused = self.revision_scope(requested)
+        for item in sorted(requested):
+            previous = self._current[item.logical_id]
+            invalidated = self.invalidated_by(previous)
+            self.select(
+                logical_id=item.logical_id,
+                version_id=item.version_id,
+                previous_version_id=previous.version_id,
+                recorded_invalidated=[ref.to_dict() for ref in invalidated],
+            )
+        if tuple(sorted(self._current.values())) != successor:
+            raise _invalid("atomic revision selection does not match the successor snapshot")
+        if any(
+            self._states[dependency] != "current"
+            for ref in self._current.values()
+            for dependency in self._records[ref].depends_on
+        ):
+            raise _invalid("atomic revision selection leaves a current artifact with an invalid dependency")
+        return affected
 
     def select(self, *, logical_id: Any, version_id: Any, previous_version_id: Any,
                recorded_invalidated: Any) -> tuple[ArtifactRef, ...]:

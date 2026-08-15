@@ -135,6 +135,9 @@ class ProjectStore:
                 contract.get("predecessor_run_id") != revision.get("predecessor_run_id")
                 or contract.get("revision_id") != revision.get("revision_id")
                 or contract.get("reuse_manifest") != revision.get("reuse_manifest")
+                or contract.get("predecessor_selection", []) != revision.get("predecessor_selection", [])
+                or contract.get("successor_selection", []) != revision.get("successor_selection", [])
+                or contract.get("execution_plan", []) != revision.get("execution_plan", [])
             ):
                 raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "successor 合同与 revision 账本不一致")
         return contract
