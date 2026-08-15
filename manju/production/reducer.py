@@ -548,13 +548,29 @@ def reduce_events(events: list[dict[str, Any]]) -> ProductionSnapshot:
     initialized = next((event for event in events if event.get("event_type") == "project_initialized"), None)
     if initialized is None:
         raise ProductionError(ReasonCode.PROJECT_EVENT_CHAIN_INVALID.value, "project_initialized is missing")
+    active_run_created_at, active_run_created = next(
+        (index, event) for index, event in enumerate(events)
+        if event.get("event_type") == "run_created" and event.get("run_id") == active_run_id
+    )
+    is_successor = bool((active_run_created.get("payload") or {}).get("predecessor_run_id"))
     scoped = [initialized]
-    if active_run_id:
-        scoped.extend(
-            event for event in events
-            if event.get("run_id") == active_run_id
-            or (not event.get("run_id") and event.get("event_type") != "project_initialized")
+    scoped.extend(
+        event for index, event in enumerate(events)
+        if event.get("run_id") == active_run_id
+        or (
+            not event.get("run_id")
+            and event.get("event_type") != "project_initialized"
+            # The first execution lease is necessarily acquired before the
+            # original run ID exists, but released under that original run.
+            # It is historical once a successor is active and must not occupy
+            # the successor's independent execution-lease slot.
+            and not (
+                is_successor
+                and index < active_run_created_at
+                and event.get("event_type") in {"execution_lease_acquired", "execution_lease_recovered"}
+            )
         )
+    )
     snapshot = _reduce_single_run(scoped)
     latest = events[-1]
     return replace(snapshot, updated_at=str(latest.get("occurred_at", snapshot.updated_at)),
