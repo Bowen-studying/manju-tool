@@ -20,6 +20,13 @@ M2_NODES = (
     DagNode(node_id="storyboard", stage="storyboard", dependencies=("source",)),
     DagNode(node_id="visual", stage="visual", dependencies=("storyboard",)),
 )
+M4_NODES = (
+    DagNode(node_id="storyboard", stage="storyboard", dependencies=("source",)),
+    DagNode(node_id="voice_script", stage="voice_script", dependencies=("storyboard",)),
+)
+M4_VISUAL_NODES = M4_NODES + (
+    DagNode(node_id="visual", stage="visual", dependencies=("storyboard",)),
+)
 
 
 def stage_event_state(events: list[dict[str, Any]], run_id: str, stage: str) -> str:

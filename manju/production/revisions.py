@@ -25,11 +25,14 @@ def _refs(value: Any) -> tuple[ArtifactRef, ...]:
     return result
 
 
-def _plan(graph: ArtifactGraph, affected: tuple[ArtifactRef, ...], changed: tuple[ArtifactRef, ...] = ()) -> tuple[dict[str, Any], ...]:
-    """Deterministically map graph invalidation to the two production stages."""
+def _plan(
+    graph: ArtifactGraph, affected: tuple[ArtifactRef, ...], changed: tuple[ArtifactRef, ...] = (),
+    *, stages: tuple[str, ...] = ("storyboard", "visual"),
+) -> tuple[dict[str, Any], ...]:
+    """Deterministically map graph invalidation to the frozen production stages."""
     result = []
     changed_ids = {ref.logical_id for ref in changed}
-    for stage in ("storyboard", "visual"):
+    for stage in stages:
         stage_refs = tuple(sorted(
             ref for ref, record in graph._records.items() if record.producer_stage == stage
         ))
@@ -38,7 +41,7 @@ def _plan(graph: ArtifactGraph, affected: tuple[ArtifactRef, ...], changed: tupl
         # meaning as a safe fallback until all stage outputs are registered.
         root_change = (stage == "storyboard" and "source.script" in changed_ids) or (
             stage == "visual" and bool({"source.script", "style.reference"} & changed_ids)
-        )
+        ) or (stage == "voice_script" and "source.script" in changed_ids)
         action = "regenerate" if set(stage_refs) & set(affected) or root_change else "reuse"
         result.append({"stage": stage, "action": action,
                        "artifact_versions": [item.to_dict() for item in stage_refs if item not in affected]})
@@ -83,7 +86,9 @@ class RevisionRecord:
         return result
 
     @classmethod
-    def from_payload(cls, value: Any) -> "RevisionRecord":
+    def from_payload(
+        cls, value: Any, *, expected_stages: tuple[str, ...] = ("storyboard", "visual")
+    ) -> "RevisionRecord":
         if not isinstance(value, dict):
             raise _invalid("revision payload is invalid")
         fields = ("revision_id", "predecessor_run_id", "successor_run_id", "requested_by", "reason", "preview_fingerprint")
@@ -98,9 +103,8 @@ class RevisionRecord:
         successor_selection = _refs(value.get("successor_selection", []))
         raw_plan = value.get("execution_plan", [])
         if predecessor_selection:
-            if not successor_selection or not isinstance(raw_plan, list) or len(raw_plan) != 2:
+            if not successor_selection or not isinstance(raw_plan, list) or len(raw_plan) != len(expected_stages):
                 raise _invalid("revision M3.3 selection or execution plan is invalid")
-            expected_stages = ("storyboard", "visual")
             if any(not isinstance(item, dict) or item.get("stage") != stage
                    or item.get("action") not in {"reuse", "regenerate"}
                    or not isinstance(item.get("artifact_versions"), list)
@@ -144,7 +148,12 @@ class RevisionProjection:
                     if revision_id or payload.get("predecessor_run_id") or payload.get("revision"):
                         raise _invalid("initial run cannot have a revision predecessor")
                 else:
-                    record = RevisionRecord.from_payload(payload.get("revision"))
+                    from manju.production.models import stages_for_dag
+
+                    expected_stages = stages_for_dag(
+                        str(payload.get("dag_version") or "production-m2-v1"), payload.get("stage_sequence"),
+                    )
+                    record = RevisionRecord.from_payload(payload.get("revision"), expected_stages=expected_stages)
                     if (record.revision_id != revision_id or run_id != record.successor_run_id
                             or payload.get("predecessor_run_id") != record.predecessor_run_id
                             or record.revision_id in projection._records):
@@ -157,7 +166,7 @@ class RevisionProjection:
                         predecessor, affected, successor, reused = graph.revision_scope(record.changed)
                         if (record.predecessor_selection != predecessor or record.affected != affected
                                 or record.successor_selection != successor or record.reused != reused
-                                or record.execution_plan != _plan(graph, affected, record.changed)):
+                                or record.execution_plan != _plan(graph, affected, record.changed, stages=expected_stages)):
                             raise _invalid("revision M3.3 scope is not deterministic")
                         expected = fingerprint({
                             "predecessor_run_id": record.predecessor_run_id,
@@ -166,7 +175,7 @@ class RevisionProjection:
                             "affected": [item.to_dict() for item in affected],
                             "successor_selection": [item.to_dict() for item in successor],
                             "reuse_manifest": [item.to_dict() for item in reused],
-                            "execution_plan": list(_plan(graph, affected, record.changed)),
+                            "execution_plan": list(_plan(graph, affected, record.changed, stages=expected_stages)),
                             "last_event_hash": prefix[-1]["event_hash"] if prefix else "",
                         })
                     else:

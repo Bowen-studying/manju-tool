@@ -47,6 +47,7 @@ class ProjectStore:
         production = project.get("production")
         storyboard = production.get("storyboard") if isinstance(production, dict) else None
         visual = production.get("visual") if isinstance(production, dict) else None
+        voice_script = production.get("voice_script", {"enabled": False}) if isinstance(production, dict) else None
         if not isinstance(source, dict) or source.get("type") not in {"novel", "script", "storyboard"}:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "source.type 不受支持")
         if not isinstance(source.get("path"), str) or not isinstance(source.get("sha256"), str):
@@ -57,6 +58,13 @@ class ProjectStore:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "storyboard engine 不受支持")
         if not isinstance(visual, dict) or not isinstance(visual.get("enabled"), bool):
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.visual 合同不完整")
+        if not isinstance(voice_script, dict) or not isinstance(voice_script.get("enabled"), bool):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_script contract is invalid")
+        if voice_script.get("enabled") and (
+            voice_script.get("mode") != "deterministic_offline"
+            or voice_script.get("schema_version") != "voice-script-v1"
+        ):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_script binding is invalid")
         if visual.get("enabled"):
             engine = visual.get("engine")
             profile = visual.get("provider_profile")
@@ -129,6 +137,8 @@ class ProjectStore:
         if len(created) != 1 or (created[0].get("payload") or {}).get("contract_fingerprint") != recorded:
             raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "run 合同未绑定到事件账本")
         event_payload = created[0].get("payload") or {}
+        if contract.get("stage_sequence") is not None and event_payload.get("stage_sequence") != contract.get("stage_sequence"):
+            raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "run stage sequence is not event-bound")
         revision = event_payload.get("revision")
         if revision is not None:
             if not isinstance(revision, dict) or (

@@ -14,7 +14,34 @@ PROJECT_SCHEMA_VERSION = "1"
 EVENT_VERSION = "1"
 DAG_VERSION = "production-m1-v1"
 M2_DAG_VERSION = "production-m2-v1"
+M4_DAG_VERSION = "production-m4-v1"
 M2_CONTRACT_VERSION = "1"
+
+
+def stages_for_dag(dag_version: str, declared: Any = None) -> tuple[str, ...]:
+    """Return the only legal stage sequence for a frozen DAG contract."""
+    if declared is not None and (
+        not isinstance(declared, list)
+        or any(not isinstance(stage, str) for stage in declared)
+    ):
+        raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "DAG stage sequence is invalid")
+    if dag_version == DAG_VERSION:
+        expected = ("storyboard",)
+    elif dag_version == M2_DAG_VERSION:
+        expected = ("storyboard", "visual")
+    elif dag_version == M4_DAG_VERSION:
+        candidate = tuple(declared) if declared is not None else ()
+        if candidate not in {
+            ("storyboard", "voice_script"),
+            ("storyboard", "voice_script", "visual"),
+        }:
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M4 stage sequence is invalid")
+        return candidate
+    else:
+        raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"unsupported dag: {dag_version}")
+    if declared is not None and tuple(declared) != expected:
+        raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "DAG stage sequence is invalid")
+    return expected
 
 
 class ProductionStatus(str, Enum):
@@ -57,6 +84,7 @@ class ReasonCode(str, Enum):
     OPERATION_OUTCOME_UNKNOWN = "OPERATION_OUTCOME_UNKNOWN"
     BUDGET_EXCEEDED = "BUDGET_EXCEEDED"
     VISUAL_FAILED = "VISUAL_FAILED"
+    VOICE_SCRIPT_FAILED = "VOICE_SCRIPT_FAILED"
 
 
 REASON_DEFAULTS: dict[str, tuple[str, int]] = {
@@ -89,6 +117,7 @@ REASON_DEFAULTS.update({
     ReasonCode.OPERATION_OUTCOME_UNKNOWN.value: ("外部操作结果未知，必须先对账", 4),
     ReasonCode.BUDGET_EXCEEDED.value: ("Provider 实际费用超出已签名预算，需人工处理", 4),
     ReasonCode.VISUAL_FAILED.value: ("mock 视觉阶段失败", 1),
+    ReasonCode.VOICE_SCRIPT_FAILED.value: ("配音脚本阶段失败", 1),
 })
 
 

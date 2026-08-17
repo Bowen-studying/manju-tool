@@ -15,7 +15,7 @@ from manju.production.models import (
 )
 from manju.production.approvals import ApprovalRequest, Grant, contractual_tariff_usage
 from manju.production.operations import OperationRecord
-from manju.production.models import M2_DAG_VERSION
+from manju.production.models import stages_for_dag
 
 
 KNOWN_EVENT_TYPES = {
@@ -74,7 +74,12 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
     visual_attached = False
     visual_stage_run_id = ""
     visual_outcome = ""
+    voice_scheduled = False
+    voice_attached = False
+    voice_stage_run_id = ""
+    voice_outcome = ""
     dag_version = "production-m1-v1"
+    stage_sequence = ("storyboard",)
     pause_requested = False
     execution_lease_id = ""
     pending_approval_id = ""
@@ -170,7 +175,11 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 and bool(payload.get("stage_invocation_id"))
                 and (
                     (target_stage == "storyboard" and not stage_scheduled)
-                    or (target_stage == "visual" and dag_version == M2_DAG_VERSION and stage_outcome == "completed" and not visual_scheduled)
+                    or (target_stage == "voice_script" and "voice_script" in stage_sequence
+                        and stage_outcome == "completed" and not voice_scheduled)
+                    or (target_stage == "visual" and "visual" in stage_sequence
+                        and (voice_outcome == "completed" if "voice_script" in stage_sequence else stage_outcome == "completed")
+                        and not visual_scheduled)
                 )
             )
         elif event_type == "stage_run_attached":
@@ -179,6 +188,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 bool(payload.get("stage_run_id"))
                 and (
                     (target_stage == "storyboard" and stage_scheduled and not stage_attached and not stage_outcome)
+                    or (target_stage == "voice_script" and voice_scheduled and not voice_attached and not voice_outcome)
                     or (target_stage == "visual" and visual_scheduled and not visual_attached and not visual_outcome)
                 )
             )
@@ -186,7 +196,10 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             target_stage = str(payload.get("stage", ""))
             valid = (
                 (target_stage == "storyboard" and stage_attached and not stage_outcome and payload.get("stage_run_id") == attached_stage_run_id)
-                or (target_stage == "visual" and dag_version == M2_DAG_VERSION and visual_attached and not visual_outcome and payload.get("stage_run_id") == visual_stage_run_id)
+                or (target_stage == "voice_script" and "voice_script" in stage_sequence and voice_attached
+                    and not voice_outcome and payload.get("stage_run_id") == voice_stage_run_id)
+                or (target_stage == "visual" and "visual" in stage_sequence and visual_attached
+                    and not visual_outcome and payload.get("stage_run_id") == visual_stage_run_id)
             )
         elif event_type == "pause_requested":
             valid = run_started and status == ProductionStatus.RUNNING.value and not pause_requested
@@ -195,8 +208,9 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type == "run_resumed":
             valid = status == ProductionStatus.PAUSED.value
         elif event_type == "run_completed":
-            valid = stage_outcome == "completed" and status == ProductionStatus.RUNNING.value and (
-                dag_version != M2_DAG_VERSION or visual_outcome == "completed"
+            outcomes = {"storyboard": stage_outcome, "voice_script": voice_outcome, "visual": visual_outcome}
+            valid = status == ProductionStatus.RUNNING.value and all(
+                outcomes[item] == "completed" for item in stage_sequence
             )
         elif event_type == "execution_lease_acquired":
             valid = initialized and not execution_lease_id and bool(payload.get("lease_id"))
@@ -364,8 +378,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type == "run_created":
             run_created = True
             dag_version = str(payload.get("dag_version") or "production-m1-v1")
-            if dag_version not in {"production-m1-v1", M2_DAG_VERSION}:
-                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"unsupported dag: {dag_version}")
+            stage_sequence = stages_for_dag(dag_version, payload.get("stage_sequence"))
             status = ProductionStatus.RUNNING.value
             reason_code = ReasonCode.PROJECT_READY.value
         elif event_type == "run_started":
@@ -374,7 +387,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             reason_code = ReasonCode.PROJECT_READY.value
         elif event_type in {"stage_scheduled", "stage_run_attached"}:
             target_stage = str(payload.get("stage", ""))
-            if target_stage not in {"storyboard", "visual"} or (target_stage == "visual" and dag_version != M2_DAG_VERSION):
+            if target_stage not in stage_sequence:
                 raise ProductionError(
                     ReasonCode.PROJECT_EVENT_CHAIN_INVALID.value,
                     f"不支持阶段: {target_stage!r}",
@@ -382,12 +395,17 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             if event_type == "stage_scheduled":
                 if target_stage == "storyboard":
                     stage_scheduled = True
+                elif target_stage == "voice_script":
+                    voice_scheduled = True
                 else:
                     visual_scheduled = True
             else:
                 if target_stage == "storyboard":
                     stage_attached = True
                     attached_stage_run_id = str(payload.get("stage_run_id", ""))
+                elif target_stage == "voice_script":
+                    voice_attached = True
+                    voice_stage_run_id = str(payload.get("stage_run_id", ""))
                 else:
                     visual_attached = True
                     visual_stage_run_id = str(payload.get("stage_run_id", ""))
@@ -406,6 +424,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type == "stage_completed":
             if payload.get("stage") == "storyboard":
                 stage_outcome = "completed"
+            elif payload.get("stage") == "voice_script":
+                voice_outcome = "completed"
             else:
                 visual_outcome = "completed"
             status = (
@@ -413,7 +433,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 if pause_requested else ProductionStatus.RUNNING.value
             )
             stage = str(payload.get("stage", stage))
-            progress_completed = max(progress_completed, 1 if payload.get("stage") == "storyboard" else 2)
+            progress_completed = max(progress_completed, stage_sequence.index(str(payload.get("stage"))) + 1)
             reason_code = (
                 ReasonCode.PROJECT_PAUSED.value
                 if pause_requested else ReasonCode.PROJECT_READY.value
@@ -421,6 +441,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type == "stage_needs_review":
             if payload.get("stage") == "storyboard":
                 stage_outcome = "needs_review"
+            elif payload.get("stage") == "voice_script":
+                voice_outcome = "needs_review"
             else:
                 visual_outcome = "needs_review"
             status = ProductionStatus.NEEDS_REVIEW.value
@@ -431,6 +453,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type == "stage_failed":
             if payload.get("stage") == "storyboard":
                 stage_outcome = "failed"
+            elif payload.get("stage") == "voice_script":
+                voice_outcome = "failed"
             else:
                 visual_outcome = "failed"
             status = ProductionStatus.FAILED.value
@@ -451,7 +475,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             next_actions = ()
         elif event_type == "run_completed":
             status = ProductionStatus.COMPLETED.value
-            progress_completed = 2 if dag_version == M2_DAG_VERSION else 1
+            progress_completed = len(stage_sequence)
             reason_code = ReasonCode.PROJECT_ALREADY_COMPLETED.value
             next_actions = ()
         elif event_type == "execution_lease_acquired":
@@ -537,7 +561,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         current_stage=stage,
         reason=ProductionReason(reason_code, reason_message),
         progress_completed=progress_completed,
-        progress_total=2 if dag_version == M2_DAG_VERSION else 1,
+        progress_total=len(stage_sequence),
         next_actions=next_actions,
         updated_at=updated_at,
         last_event_hash=last_hash,

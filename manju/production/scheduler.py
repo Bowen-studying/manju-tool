@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from manju.production.graph import stage_event_state
-from manju.production.models import M2_DAG_VERSION, ProductionSnapshot, ProductionStatus
+from manju.production.models import ProductionSnapshot, ProductionStatus, stages_for_dag
 
 
 class ProductionScheduler:
@@ -29,21 +29,20 @@ class ProductionScheduler:
             return "start_run"
         if snapshot.status == ProductionStatus.PAUSED.value:
             return "resume_run"
-        storyboard_state = stage_event_state(events, snapshot.run_id, "storyboard")
-        dag_version = next(
-            (str((event.get("payload") or {}).get("dag_version") or "production-m1-v1")
-             for event in events if event.get("run_id") == snapshot.run_id and event.get("event_type") == "run_created"),
-            "production-m1-v1",
+        created = next(
+            (event for event in events
+             if event.get("run_id") == snapshot.run_id and event.get("event_type") == "run_created"),
+            None,
         )
-        if storyboard_state == "completed":
-            if dag_version == M2_DAG_VERSION:
-                visual_state = stage_event_state(events, snapshot.run_id, "visual")
-                if visual_state == "completed":
-                    return "complete_run"
-                if visual_state in {"needs_review", "failed"}:
-                    return "stop"
-                return "advance_visual"
-            return "complete_run"
-        if storyboard_state in {"needs_review", "failed"}:
-            return "stop"
-        return "advance_storyboard"
+        payload = (created or {}).get("payload") or {}
+        stages = stages_for_dag(
+            str(payload.get("dag_version") or "production-m1-v1"), payload.get("stage_sequence"),
+        )
+        for stage in stages:
+            state = stage_event_state(events, snapshot.run_id, stage)
+            if state == "completed":
+                continue
+            if state in {"needs_review", "failed"}:
+                return "stop"
+            return f"advance_{stage}"
+        return "complete_run"

@@ -129,12 +129,13 @@ def project():
 @click.option("--visual-settlement-mode", type=click.Choice(["provider_evidence", "contractual_tariff"]), default="provider_evidence", show_default=True)
 @click.option("--visual-contractual-tariff-id", default="", help="Pre-agreed tariff identifier; never an upstream invoice")
 @click.option("--visual-contractual-tariff-amount", default="", help="Pre-agreed amount in project minor currency units")
+@click.option("--voice-script", is_flag=True, help="启用离线确定性配音脚本阶段（不调用 TTS）")
 @click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")
 def project_init(source, source_type, output_dir, engine, max_scenes, agent_max_steps,
                   agent_max_calls, agent_max_revisions, provider_profile, hmac_key_id,
                   visual_mock, visual_provider_profile, visual_request_file, visual_operation_kind,
                   visual_max_calls, visual_max_amount, visual_settlement_mode,
-                  visual_contractual_tariff_id, visual_contractual_tariff_amount, json_output):
+                  visual_contractual_tariff_id, visual_contractual_tariff_amount, voice_script, json_output):
     """创建项目合同并接收一个持久化源文件。"""
     from manju.production import ProductionError, initialize_project
 
@@ -165,6 +166,7 @@ def project_init(source, source_type, output_dir, engine, max_scenes, agent_max_
             visual_settlement_mode=visual_settlement_mode,
             visual_contractual_tariff_id=visual_contractual_tariff_id,
             visual_contractual_tariff_amount=visual_contractual_tariff_amount,
+            voice_script_enabled=voice_script,
         )
         _echo_production_payload(snapshot, json_output=json_output)
     except ProductionError as exc:

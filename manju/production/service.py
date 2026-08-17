@@ -21,6 +21,8 @@ from manju.pipeline.storyboard_supervisor import (
 )
 from manju.production.adapters.storyboard import StoryboardStageAdapter
 from manju.production.adapters.visual import VisualStageAdapter
+from manju.production.adapters.voice_script import VoiceScriptStageAdapter
+from manju.production.adapters.base import StageResult
 from manju.production.approvals import ApprovalRequest, Grant, contractual_tariff_usage, create_contractual_tariff
 from manju.production.artifacts import ArtifactGraph, ArtifactRecord, ArtifactRef
 from manju.production.events import HmacKeyProvider
@@ -36,6 +38,7 @@ from manju.production.locking import ProjectLock
 from manju.production.models import (
     DAG_VERSION,
     M2_DAG_VERSION,
+    M4_DAG_VERSION,
     PROJECT_SCHEMA_VERSION,
     ProductionError,
     ProductionSnapshot,
@@ -43,12 +46,13 @@ from manju.production.models import (
     ReasonCode,
     fingerprint,
     utc_now,
+    stages_for_dag,
 )
 from manju.production.paths import ProjectPaths
 from manju.production.scheduler import ProductionScheduler
 from manju.production.store import ProjectStore, sha256_file
 from manju.utils.ai import get_ai_config
-from manju.utils.runtime import atomic_write_json, safe_filename
+from manju.utils.runtime import atomic_write_json, read_json, safe_filename
 from manju.utils.runtime import atomic_write_bytes
 
 
@@ -76,6 +80,7 @@ def initialize_project(
     visual_settlement_mode: str = "provider_evidence",
     visual_contractual_tariff_id: str = "",
     visual_contractual_tariff_amount: str = "",
+    voice_script_enabled: bool = False,
 ) -> ProductionSnapshot:
     source = os.path.abspath(source)
     if source_type not in {"novel", "script", "storyboard"}:
@@ -144,6 +149,11 @@ def initialize_project(
                     ) if visual_enabled and visual_settlement_mode == "contractual_tariff" else None
                 ),
             },
+            "voice_script": {
+                "enabled": voice_script_enabled,
+                "mode": "deterministic_offline" if voice_script_enabled else "",
+                "schema_version": "voice-script-v1" if voice_script_enabled else "",
+            },
             "voice": {"enabled": False},
             "video": {"enabled": False},
         },
@@ -168,6 +178,7 @@ class ProductionService:
         *,
         storyboard_adapter: StoryboardStageAdapter | None = None,
         visual_adapter: VisualStageAdapter | None = None,
+        voice_script_adapter: VoiceScriptStageAdapter | None = None,
         hmac_key_provider: HmacKeyProvider | None = None,
         listeners: tuple[SnapshotListener, ...] = (),
     ):
@@ -176,6 +187,7 @@ class ProductionService:
         self.paths = self.store.paths
         self.storyboard_adapter = storyboard_adapter or StoryboardStageAdapter()
         self.visual_adapter = visual_adapter or VisualStageAdapter()
+        self.voice_script_adapter = voice_script_adapter or VoiceScriptStageAdapter()
         self.scheduler = ProductionScheduler()
         self.listeners = listeners
 
@@ -429,7 +441,7 @@ class ProductionService:
         current = tuple(ArtifactRef(item["logical_id"], item["version_id"]) for item in graph.to_dict()["current"])
         if not requested or len(set(requested)) != len(requested):
             raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts are invalid")
-        direct_stage_outputs = {"storyboard.output", "visual.asset"}
+        direct_stage_outputs = {"storyboard.output", "voice_script.main", "visual.asset"}
         if any(item.logical_id in direct_stage_outputs for item in requested):
             raise ProductionError(
                 ReasonCode.OPERATION_CONTRACT_INVALID.value,
@@ -438,7 +450,15 @@ class ProductionService:
         is_candidate_revision = all(graph._states.get(item) == "available" for item in requested)
         if is_candidate_revision:
             predecessor_selection, affected, successor_selection, reused = graph.revision_scope(requested)
-            execution_plan = self._revision_execution_plan(graph, affected, requested)
+            configured_stages = (
+                ("storyboard", "voice_script", "visual")
+                if project.get("production", {}).get("voice_script", {}).get("enabled")
+                and project.get("production", {}).get("visual", {}).get("enabled")
+                else ("storyboard", "voice_script")
+                if project.get("production", {}).get("voice_script", {}).get("enabled")
+                else ("storyboard", "visual")
+            )
+            execution_plan = self._revision_execution_plan(graph, affected, requested, stages=configured_stages)
         elif set(requested).issubset(set(current)):
             # Backward-compatible M3.1 history: the version was already selected
             # before preview. New M3.3 callers must use revision candidates.
@@ -475,7 +495,10 @@ class ProductionService:
         }
 
     @staticmethod
-    def _revision_execution_plan(graph: ArtifactGraph, affected: tuple[ArtifactRef, ...], changed: tuple[ArtifactRef, ...]) -> list[dict[str, Any]]:
+    def _revision_execution_plan(
+        graph: ArtifactGraph, affected: tuple[ArtifactRef, ...], changed: tuple[ArtifactRef, ...],
+        *, stages: tuple[str, ...] = ("storyboard", "visual"),
+    ) -> list[dict[str, Any]]:
         affected_set = set(affected)
         changed_ids = {ref.logical_id for ref in changed}
         return [
@@ -485,11 +508,12 @@ class ProductionService:
                     any(record.producer_stage == stage and ref in affected_set for ref, record in graph._records.items())
                     or (stage == "storyboard" and "source.script" in changed_ids)
                     or (stage == "visual" and bool({"source.script", "style.reference"} & changed_ids))
+                    or (stage == "voice_script" and "source.script" in changed_ids)
                 ) else "reuse",
                 "artifact_versions": [ref.to_dict() for ref, record in sorted(graph._records.items())
                                       if record.producer_stage == stage and ref not in affected_set],
             }
-            for stage in ("storyboard", "visual")
+            for stage in stages
         ]
 
     @staticmethod
@@ -537,6 +561,19 @@ class ProductionService:
             if isinstance(style, dict):
                 dependencies.append(ArtifactRef.from_dict(style).to_dict())
             logical_id = "visual.asset"
+        elif stage == "voice_script":
+            storyboard_event = next(
+                (event for event in reversed(events) if event.get("run_id") == run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "storyboard"),
+                None,
+            )
+            storyboard_payload = ((storyboard_event or {}).get("payload") or {})
+            storyboard_outputs = storyboard_payload.get("produced_artifacts") or storyboard_payload.get("reused_artifacts") or []
+            if len(storyboard_outputs) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-script storyboard graph output is absent")
+            dependencies.append(ArtifactRef.from_dict(storyboard_outputs[0]).to_dict())
+            logical_id = "voice_script.main"
         else:
             raise ProductionError(ReasonCode.INTERNAL_ERROR.value, f"unknown output stage: {stage}")
         record = ArtifactRecord.from_dict({
@@ -623,6 +660,7 @@ class ProductionService:
             try:
                 self.store.events.append("run_created", project_id=project["project_id"], run_id=successor_run_id,
                                          payload={"contract_fingerprint": contract["contract_fingerprint"], "dag_version": contract["dag_version"],
+                                                  "stage_sequence": contract["stage_sequence"],
                                                   "predecessor_run_id": predecessor_run_id, "revision_id": revision_id,
                                                   "revision": revision})
             except BaseException:
@@ -1088,8 +1126,15 @@ class ProductionService:
                           execution_plan: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
         storyboard = project["production"]["storyboard"]
         visual = project["production"]["visual"]
+        voice_script = project["production"].get("voice_script", {"enabled": False})
         runtime_inputs = self._runtime_inputs(project, run_id, successor_selection)
         source_input = runtime_inputs["source.script"]
+        if voice_script.get("enabled"):
+            dag_version = M4_DAG_VERSION
+            stage_sequence = ["storyboard", "voice_script"] + (["visual"] if visual.get("enabled") else [])
+        else:
+            dag_version = M2_DAG_VERSION if visual.get("enabled") else DAG_VERSION
+            stage_sequence = list(stages_for_dag(dag_version))
         contract = {
             "schema_version": PROJECT_SCHEMA_VERSION,
             "run_id": run_id,
@@ -1097,10 +1142,12 @@ class ProductionService:
             "project_spec_fingerprint": fingerprint(project),
             "source_fingerprint": source_input["version_id"][7:],
             "storyboard_source_fingerprint": source_input["version_id"][7:],
-            "dag_version": M2_DAG_VERSION if visual.get("enabled") else DAG_VERSION,
+            "dag_version": dag_version,
+            "stage_sequence": stage_sequence,
             "adapter_contract_versions": {
                 "storyboard": self.storyboard_adapter.contract_version,
                 "visual": self.visual_adapter.contract_version if visual.get("enabled") else "",
+                "voice_script": self.voice_script_adapter.contract_version if voice_script.get("enabled") else "",
             },
             "models": {
                 "storyboard": self._configured_model(),
@@ -1116,6 +1163,7 @@ class ProductionService:
             "integrity": project.get("integrity", {}),
             "storyboard_settings": storyboard,
             "visual_settings": visual,
+            "voice_script_settings": voice_script,
             "predecessor_run_id": predecessor_run_id,
             "revision_id": revision_id,
             "reuse_manifest": list(reuse_manifest),
@@ -1135,6 +1183,10 @@ class ProductionService:
             "tool": contract.get("tool_protocol_versions", {}).get("storyboard_supervisor"),
             "code": contract.get("code_version"),
             "visual_adapter": contract.get("adapter_contract_versions", {}).get("visual", ""),
+            "voice_script_adapter": contract.get("adapter_contract_versions", {}).get("voice_script", ""),
+            "stage_sequence": list(stages_for_dag(
+                str(contract.get("dag_version", "")), contract.get("stage_sequence")
+            )),
         }
         actual = {
             "model": self._configured_model(),
@@ -1142,7 +1194,15 @@ class ProductionService:
             "prompt": SUPERVISOR_AGENT_VERSION,
             "tool": SUPERVISOR_TOOLSET_VERSION,
             "code": __version__,
-            "visual_adapter": self.visual_adapter.contract_version if contract.get("dag_version") == M2_DAG_VERSION else "",
+            "visual_adapter": self.visual_adapter.contract_version if "visual" in stages_for_dag(
+                str(contract.get("dag_version", "")), contract.get("stage_sequence")
+            ) else "",
+            "voice_script_adapter": self.voice_script_adapter.contract_version if "voice_script" in stages_for_dag(
+                str(contract.get("dag_version", "")), contract.get("stage_sequence")
+            ) else "",
+            "stage_sequence": list(stages_for_dag(
+                str(contract.get("dag_version", "")), contract.get("stage_sequence")
+            )),
         }
         legacy_visual = expected["visual_adapter"] == "visual-adapter-m2-3-v1"
         if legacy_visual:
@@ -1184,7 +1244,7 @@ class ProductionService:
     ) -> None:
         payload = terminal.get("payload") if isinstance(terminal.get("payload"), dict) else {}
         stage = str(payload.get("stage", ""))
-        if stage not in {"storyboard", "visual"}:
+        if stage not in {"storyboard", "voice_script", "visual"}:
             raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "terminal stage is unsupported")
         authority_path = str(payload.get("authority_path", ""))
         expected_hash = str(payload.get("authority_hash", ""))
@@ -1273,6 +1333,47 @@ class ProductionService:
                 raise ProductionError(
                     ReasonCode.STAGE_INTEGRITY_FAILED.value,
                     "分镜子 run 身份与顶层事件不一致",
+                )
+        elif stage == "voice_script":
+            scheduled_id = f"voice-script-{snapshot.run_id.removeprefix('run_')}"
+            output_dir = self.paths.voice_script_dir(snapshot.run_id, scheduled_id)
+            storyboard_event = next(
+                (event for event in reversed(events) if event.get("run_id") == snapshot.run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "storyboard"),
+                None,
+            )
+            storyboard_payload = (storyboard_event or {}).get("payload") or {}
+            storyboard_outputs = storyboard_payload.get("produced_artifacts") or storyboard_payload.get("reused_artifacts") or []
+            if len(storyboard_outputs) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-script storyboard authority is absent")
+            storyboard_ref = ArtifactRef.from_dict(storyboard_outputs[0]).to_dict()
+            inspected = self.voice_script_adapter.inspect(
+                stage_run_id=scheduled_id, output_dir=output_dir, storyboard_ref=storyboard_ref,
+            )
+            expected_authority = os.path.relpath(
+                os.path.join(output_dir, self.voice_script_adapter.authority_name), self.paths.root,
+            )
+            expected_artifacts = {
+                (os.path.realpath(str(item.get("path", ""))), str(item.get("version_id", "")))
+                for item in (inspected.artifacts if inspected is not None else ())
+            }
+            recorded_artifacts = {
+                (os.path.realpath(os.path.join(self.paths.root, str(item.get("path", "")))), str(item.get("version_id", "")))
+                for item in artifacts or [] if isinstance(item, dict)
+            }
+            if (
+                inspected is None or inspected.status != "completed"
+                or inspected.stage_run_id != payload.get("stage_run_id")
+                or payload.get("stage_run_id") != scheduled_id
+                or authority_path != expected_authority
+                or inspected.authority_hash != expected_hash
+                or os.path.realpath(inspected.authority_path) != absolute
+                or expected_artifacts != recorded_artifacts
+            ):
+                raise ProductionError(
+                    ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                    "voice-script authority does not match the terminal event",
                 )
         elif stage == "visual":
             scheduled_id = f"visual-{snapshot.run_id.removeprefix('run_')}"
@@ -1443,6 +1544,64 @@ class ProductionService:
             atomic_write_json(self.paths.state_file, projection)
         return self._publish(snapshot)
 
+    def get_voice_script_status(self) -> dict[str, Any]:
+        """Return a path-free DTO for CLI, HTTP, or desktop frontends."""
+        snapshot = self.get_status()
+        events = self.store.events.read()
+        terminal = next(
+            (event for event in reversed(events) if event.get("run_id") == snapshot.run_id
+             and event.get("event_type") in {"stage_completed", "stage_failed", "stage_needs_review"}
+             and (event.get("payload") or {}).get("stage") == "voice_script"),
+            None,
+        )
+        running = has_event(events, snapshot.run_id, "stage_scheduled", "voice_script")
+        status = "running" if running else "pending"
+        reason = {"code": ReasonCode.PROJECT_READY.value, "message": ""}
+        artifact_dto: dict[str, Any] | None = None
+        input_dto: dict[str, str] | None = None
+        reused_from: dict[str, str] | None = None
+        if terminal is not None:
+            payload = terminal.get("payload") or {}
+            if terminal.get("event_type") == "stage_completed":
+                status = "reused" if payload.get("reused_from") else "completed"
+                records = payload.get("produced_artifacts") or payload.get("reused_artifacts") or []
+                artifacts = payload.get("artifacts") or []
+                if len(records) == 1 and len(artifacts) == 1:
+                    record = ArtifactRecord.from_dict(records[0])
+                    path = self.store.artifact_path(str(artifacts[0].get("path", "")))
+                    value = read_json(path)
+                    if not isinstance(value, dict) or value.get("schema_version") != "voice-script-v1":
+                        raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-script DTO source is invalid")
+                    artifact_dto = {
+                        "logical_id": record.ref.logical_id,
+                        "version_id": record.ref.version_id,
+                        "entry_count": value.get("entry_count"),
+                    }
+                    if len(record.depends_on) == 1:
+                        input_dto = record.depends_on[0].to_dict()
+                if isinstance(payload.get("reused_from"), dict):
+                    reused_from = {
+                        "run_id": str(payload["reused_from"].get("run_id", "")),
+                        "stage_run_id": str(payload["reused_from"].get("stage_run_id", "")),
+                    }
+            else:
+                status = "failed" if terminal.get("event_type") == "stage_failed" else "needs_review"
+                reason = {
+                    "code": str(payload.get("reason_code") or ReasonCode.VOICE_SCRIPT_FAILED.value),
+                    "message": str(payload.get("message", "")),
+                }
+        return {
+            "schema_version": "1",
+            "run_id": snapshot.run_id,
+            "stage": "voice_script",
+            "status": status,
+            "reason": reason,
+            "artifact": artifact_dto,
+            "input": input_dto,
+            "reused_from": reused_from,
+            "next_actions": [],
+        }
+
     def _record_execution_lease_acquired(self, lease: ProjectLock) -> None:
         with ProjectLock(self.paths.lock_file):
             project = self.store.load_project()
@@ -1512,7 +1671,8 @@ class ProductionService:
                     atomic_write_json(self.paths.contract_file(run_id), contract)
                     self.store.events.append(
                         "run_created", project_id=project["project_id"], run_id=run_id,
-                        payload={"contract_fingerprint": contract["contract_fingerprint"], "dag_version": contract["dag_version"]},
+                        payload={"contract_fingerprint": contract["contract_fingerprint"], "dag_version": contract["dag_version"],
+                                 "stage_sequence": contract["stage_sequence"]},
                     )
                     self.store.events.append(
                         "run_started", project_id=project["project_id"], run_id=run_id, payload={},
@@ -1536,11 +1696,96 @@ class ProductionService:
                         run_id=snapshot.run_id, payload={},
                     )
                     return self._snapshot_and_project()
-                if action in {"advance_storyboard", "advance_visual"} and contract is not None:
-                    stage = "storyboard" if action == "advance_storyboard" else "visual"
+                if action in {"advance_storyboard", "advance_voice_script", "advance_visual"} and contract is not None:
+                    stage = action.removeprefix("advance_")
                     if self._stage_execution_action(contract, stage) == "reuse":
                         return self._reuse_predecessor_stage(project=project, snapshot=snapshot, contract=contract,
                                                              events=events, stage=stage)
+                if action == "advance_voice_script" and contract is not None:
+                    run_id = snapshot.run_id
+                    stage_run_id = f"voice-script-{run_id.removeprefix('run_')}"
+                    output_dir = self.paths.voice_script_dir(run_id, stage_run_id)
+                    if not has_event(events, run_id, "stage_scheduled", "voice_script"):
+                        self.store.events.append(
+                            "stage_scheduled", project_id=project["project_id"], run_id=run_id,
+                            payload={"stage": "voice_script", "stage_invocation_id": stage_run_id},
+                        )
+                    events = self.store.events.read()
+                    storyboard_event = next(
+                        (event for event in reversed(events) if event.get("run_id") == run_id
+                         and event.get("event_type") == "stage_completed"
+                         and (event.get("payload") or {}).get("stage") == "storyboard"),
+                        None,
+                    )
+                    storyboard_payload = (storyboard_event or {}).get("payload") or {}
+                    storyboard_graph = storyboard_payload.get("produced_artifacts") or storyboard_payload.get("reused_artifacts") or []
+                    storyboard_public = storyboard_payload.get("artifacts") or []
+                    if len(storyboard_graph) != 1 or len(storyboard_public) != 1:
+                        raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-script requires one storyboard artifact")
+                    storyboard_ref = ArtifactRef.from_dict(storyboard_graph[0]).to_dict()
+                    public = storyboard_public[0]
+                    storyboard_path = self._stage_private_artifact(
+                        path=str(public.get("path", "")), version_id=storyboard_ref["version_id"],
+                        logical_id="storyboard.output", output_dir=output_dir,
+                    )
+                    try:
+                        result = self.voice_script_adapter.execute(
+                            stage_run_id=stage_run_id, storyboard_path=storyboard_path,
+                            storyboard_ref=storyboard_ref, output_dir=output_dir,
+                        )
+                    except Exception as exc:
+                        result = StageResult(
+                            status="failed", stage_run_id=stage_run_id,
+                            reason_code=ReasonCode.VOICE_SCRIPT_FAILED.value,
+                            message=f"{type(exc).__name__}: {str(exc)[:300]}",
+                        )
+                    if not has_event(events, run_id, "stage_run_attached", "voice_script"):
+                        self.store.events.append(
+                            "stage_run_attached", project_id=project["project_id"], run_id=run_id,
+                            payload={"stage": "voice_script", "stage_run_id": stage_run_id},
+                        )
+                    common = {
+                        "stage": "voice_script",
+                        "stage_run_id": stage_run_id,
+                        "authority_path": self._relative_artifact_path(result.authority_path) if result.authority_path else "",
+                        "authority_hash": result.authority_hash,
+                        "authority_files": [
+                            {"path": self._relative_artifact_path(item["path"]), "sha256": item["sha256"]}
+                            for item in result.authority_files
+                        ],
+                        "artifacts": [
+                            {**artifact, "path": self._relative_artifact_path(str(artifact.get("path", "")))}
+                            for artifact in result.artifacts
+                        ],
+                    }
+                    if result.status == "completed" and result.artifacts:
+                        common["produced_artifacts"] = self._produced_artifacts(
+                            stage="voice_script", run_id=run_id, contract=contract,
+                            artifacts=common["artifacts"], events=self.store.events.read(),
+                        )
+                    if result.status == "completed" and (
+                        not result.authority_path or not result.authority_hash
+                        or not result.authority_files or not result.artifacts
+                    ):
+                        result = StageResult(
+                            status="failed", stage_run_id=stage_run_id,
+                            reason_code=ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                            message="voice-script result lacks authority or artifact bindings",
+                        )
+                    if result.status == "completed":
+                        self.store.events.append(
+                            "stage_completed", project_id=project["project_id"], run_id=run_id, payload=common,
+                        )
+                    else:
+                        self.store.events.append(
+                            "stage_failed", project_id=project["project_id"], run_id=run_id,
+                            payload={
+                                **common,
+                                "reason_code": result.reason_code or ReasonCode.VOICE_SCRIPT_FAILED.value,
+                                "message": result.message,
+                            },
+                        )
+                    return self._snapshot_and_project()
                 if action == "advance_visual" and contract is not None:
                     self._configure_visual_receipt_signer(project)
                     run_id = snapshot.run_id
