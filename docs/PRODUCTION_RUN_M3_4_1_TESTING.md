@@ -46,3 +46,16 @@ Provider and do not create a new revision.
 
 No paid API call is needed for this retest because the affected code only
 validates stored evidence and bootstrap recovery.
+
+## Completed operator result
+
+The clean archive passed `496 passed, 1 skipped, 0 failed`. Fresh source and
+style audit snapshots both reported `manifest_valid=true` and
+`hmac_verified=true`. The retained command log directly records both tamper
+checks failing closed for the source project; the supplied operator report
+records the corresponding style checks. No Provider call was made.
+
+The signing value used by this retest was disclosed as a test fixture in the
+operator report. Accordingly, the result validates HMAC implementation and
+evidence integrity behavior, not exclusive operator identity or production
+key custody.

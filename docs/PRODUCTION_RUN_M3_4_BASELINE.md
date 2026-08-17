@@ -38,10 +38,11 @@ Two disposable real paid successor runs completed:
   and current visual depending on storyboard v1 plus style v2.
 
 The exported outer manifests verified `81/81` and `75/75` files. Both inner
-audit manifests verified locally. The supplied report records successful HMAC
-verification by the operator; it was not independently repeated in this
-workspace because the external key is intentionally absent. The key and
-Provider credentials are not part of the evidence bundles.
+audit manifests verified locally. The supplied M3.4.1 report records successful
+HMAC verification for both paid project copies. The report also discloses that
+the signing value is a test fixture, so this evidence proves signature and
+tamper-detection mechanics but does not establish exclusive operator identity.
+No production key or Provider credential is part of the evidence bundles.
 
 Contractual-tariff settlement proves the signed, pre-agreed price only. It is
 not evidence of the Provider's upstream actual cost.
@@ -57,6 +58,11 @@ not evidence of the Provider's upstream actual cost.
 
 ## Next milestone boundary
 
-M3.5 may add a producer-run authority model or a higher-level agent interface,
-but it must not infer authority from an artifact hash alone, mutate a completed
-predecessor, or move paid side effects outside the approval and grant boundary.
+The artifact/revision milestone is closed at M3.4.1. The next planned runtime
+milestone is M4.0 deterministic offline voice-script integration, following
+the architecture order in `PRODUCTION_RUN_V1_ARCHITECTURE.md`. Paid TTS is a
+later increment after the offline stage is frozen. Direct storyboard/visual output
+replacement remains deferred until an explicit producer-run authority model is
+specified. Later work must not infer authority from an artifact hash alone,
+mutate a completed predecessor, or move paid side effects outside the approval
+and grant boundary.
