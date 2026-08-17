@@ -8,7 +8,7 @@ import stat
 from typing import Any
 
 from manju.production.events import EventStore, HmacKeyProvider
-from manju.production.artifacts import ArtifactGraph
+from manju.production.artifacts import ArtifactGraph, ArtifactRef
 from manju.production.revisions import RevisionProjection
 from manju.production.models import (
     PROJECT_SCHEMA_VERSION,
@@ -141,6 +141,33 @@ class ProjectStore:
             ):
                 raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "successor 合同与 revision 账本不一致")
         return contract
+
+    def validate_runtime_inputs(self, project: dict[str, Any], contract: dict[str, Any]) -> dict[str, str]:
+        """Verify every immutable run input and return its resolved snapshot path."""
+        inputs = contract.get("runtime_inputs")
+        if not isinstance(inputs, dict):
+            return {"source.script": self.validate_source(project)}
+        if "source.script" not in inputs:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "runtime source input is absent")
+        resolved: dict[str, str] = {}
+        for logical_id, value in sorted(inputs.items()):
+            if not isinstance(value, dict):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      f"runtime input is invalid: {logical_id}")
+            ref = ArtifactRef.from_dict(value)
+            if ref.logical_id != logical_id:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      f"runtime input logical_id mismatch: {logical_id}")
+            snapshot_path = value.get("snapshot_path")
+            if not isinstance(snapshot_path, str):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      f"runtime input snapshot is invalid: {logical_id}")
+            absolute_path = self.artifact_path(snapshot_path)
+            if not os.path.isfile(absolute_path) or sha256_file(absolute_path) != ref.version_id[7:]:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      f"runtime input is missing or changed: {logical_id}")
+            resolved[logical_id] = absolute_path
+        return resolved
 
     def snapshot(self):
         events = self.events.read()

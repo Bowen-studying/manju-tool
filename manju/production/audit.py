@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
 import shutil
 import stat
 from datetime import datetime, timezone
 from typing import Any
 
 from manju.production.events import HmacKeyProvider, sign_payload
+from manju.production.artifacts import ArtifactRef
 from manju.production.models import ProductionError, ReasonCode
 from manju.production.store import ProjectStore
 from manju.utils.runtime import atomic_write_bytes, atomic_write_json, read_json
@@ -20,6 +22,7 @@ _MANIFEST_RECORD = "AUDIT_MANIFEST.json"
 _MANIFEST_DOMAIN = "manju-production-audit-manifest-v1"
 _FORBIDDEN_NAMES = frozenset({"credentials.json", "secrets.json"})
 _FORBIDDEN_KEYS = frozenset({"api_key", "authorization", "password", "secret", "access_token", "bearer_token", "client_secret", "auth_token"})
+_PRIVATE_INPUT_NAME = re.compile(r"^(.+)-([0-9a-f]{64})\.bin$")
 
 
 def _sha256_file(path: str) -> str:
@@ -95,6 +98,50 @@ def _worker_state_allowed(relative: str) -> bool:
     return len(parts) == 2 and parts[0] == "claims" and parts[1].endswith(".json")
 
 
+def _validate_project_runtime_evidence(
+    store: ProjectStore, project: dict[str, Any], events: list[dict[str, Any]],
+) -> None:
+    """Validate every historical run input and content-addressed stage copy."""
+    run_ids = tuple(dict.fromkeys(
+        str(event.get("run_id")) for event in events
+        if event.get("event_type") == "run_created" and event.get("run_id")
+    ))
+    for run_id in run_ids:
+        contract = store.validate_contract(project, run_id)
+        store.validate_runtime_inputs(project, contract)
+        expected_private: set[tuple[str, str]] = set()
+        runtime_inputs = contract.get("runtime_inputs")
+        if isinstance(runtime_inputs, dict):
+            for value in runtime_inputs.values():
+                ref = ArtifactRef.from_dict(value)
+                expected_private.add((ref.logical_id, ref.version_id[7:]))
+        for event in events:
+            if event.get("run_id") != run_id or event.get("event_type") != "stage_completed":
+                continue
+            payload = event.get("payload") if isinstance(event.get("payload"), dict) else {}
+            for key in ("produced_artifacts", "reused_artifacts"):
+                for value in payload.get(key) or []:
+                    ref = ArtifactRef.from_dict(value)
+                    expected_private.add((ref.logical_id, ref.version_id[7:]))
+        run_dir = store.paths.run_dir(run_id)
+        for root, _directories, files in os.walk(run_dir, followlinks=False):
+            if os.path.basename(root) != ".runtime_inputs":
+                continue
+            for name in files:
+                match = _PRIVATE_INPUT_NAME.fullmatch(name)
+                path = os.path.join(root, name)
+                if (
+                    match is None
+                    or _is_link_or_reparse(path)
+                    or (match.group(1), match.group(2)) not in expected_private
+                    or _sha256_file(path) != match.group(2)
+                ):
+                    raise ProductionError(
+                        ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                        "stage-private runtime input evidence is invalid",
+                    )
+
+
 def _write_manifest(destination: str) -> int:
     manifest = os.path.join(destination, "SHA256SUMS.txt")
     entries: list[str] = []
@@ -129,7 +176,11 @@ def export_audit_snapshot(*, project_json: str, destination: str, worker_result_
 
     os.makedirs(destination)
     source_relative = str((project.get("source") or {}).get("path", ""))
-    graph = ProjectStore(project_json, key_provider=key_provider).artifact_graph()
+    store = ProjectStore(project_json, key_provider=key_provider)
+    graph = store.artifact_graph()
+    events = store.events.read()
+    store.snapshot()
+    _validate_project_runtime_evidence(store, project, events)
     artifact_paths = frozenset(record.path for record in graph._records.values())
     _copy_safe_tree(project_root, os.path.join(destination, "project"),
                     allowed=lambda relative: _project_evidence_allowed(relative, source_relative, artifact_paths))
@@ -210,8 +261,7 @@ def verify_audit_snapshot(*, destination: str, key_provider: HmacKeyProvider | N
         project = store.load_project()
         store.validate_source(project)
         events = store.events.read()
-        snapshot = store.snapshot()
-        if snapshot.run_id:
-            store.validate_contract(project, snapshot.run_id)
+        store.snapshot()
+        _validate_project_runtime_evidence(store, project, events)
         result.update({"hmac_verified": True, "event_count": len(events), "project_id": project["project_id"]})
     return result

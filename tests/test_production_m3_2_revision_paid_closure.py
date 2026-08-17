@@ -53,7 +53,6 @@ def _register_candidate(service, *, logical_id: str, name: str, content: bytes) 
 def test_completed_predecessor_revision_requires_new_grant_and_settles_one_successor_operation(tmp_path, monkeypatch):
     service, predecessor_grant, _project = _service(tmp_path, monkeypatch)
 
-    _register_select(service, logical_id="source.script", name="source-v1.txt", content=b"v1")
     style_v1 = _register_select(service, logical_id="style.reference", name="style-v1.txt", content=b"style")
 
     # Complete the predecessor through the fixture worker. Its paid authority

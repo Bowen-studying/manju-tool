@@ -32,18 +32,16 @@ def _register_derived(service, *, logical_id, name, content, stage, depends_on):
 
 def _complete_predecessor_with_graph(tmp_path, monkeypatch):
     service, grant, _project = _service(tmp_path, monkeypatch)
-    from manju.production.artifacts import ArtifactRef
-    source = ArtifactRef("source.script", _register_select(service, logical_id="source.script", name="source-v1.txt", content=b"v1"))
     style = ArtifactRef("style.reference", _register_select(service, logical_id="style.reference", name="style-v1.txt", content=b"style"))
-    storyboard = _register_derived(service, logical_id="storyboard.output", name="storyboard-v1.json", content=b"storyboard-v1",
-                                    stage="storyboard", depends_on=(source,))
-    visual = _register_derived(service, logical_id="visual.asset", name="visual-v1.png", content=b"visual-v1",
-                                stage="visual", depends_on=(storyboard, style))
     metadata = ArtifactRef("metadata.note", _register_select(service, logical_id="metadata.note", name="metadata-v1.txt", content=b"old"))
     _prepared, dispatch, imported = _import_success(service, grant, tmp_path)
     service.settle_manual_contractual_tariff(operation_id=dispatch.operation_id, expected_last_event_hash=imported.last_event_hash)
     predecessor = service.run_until_blocked()
     assert predecessor.status == "completed"
+    graph = service.store.artifact_graph()
+    source = ArtifactRef("source.script", graph.current_version("source.script"))
+    storyboard = ArtifactRef("storyboard.output", graph.current_version("storyboard.output"))
+    visual = ArtifactRef("visual.asset", graph.current_version("visual.asset"))
     return service, predecessor, source, style, storyboard, visual, metadata
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import mimetypes
@@ -18,7 +19,7 @@ from manju.pipeline.storyboard_supervisor import (
     SUPERVISOR_AGENT_VERSION,
     SUPERVISOR_TOOLSET_VERSION,
 )
-from manju.production.adapters.storyboard import StoryboardStageAdapter, storyboard_source_sha256
+from manju.production.adapters.storyboard import StoryboardStageAdapter
 from manju.production.adapters.visual import VisualStageAdapter
 from manju.production.approvals import ApprovalRequest, Grant, contractual_tariff_usage, create_contractual_tariff
 from manju.production.artifacts import ArtifactGraph, ArtifactRecord, ArtifactRef
@@ -234,6 +235,181 @@ class ProductionService:
         graph, snapshot = self.store.artifact_graph_snapshot()
         return self._artifact_graph_payload(project, graph, snapshot)
 
+    def _ensure_project_source_artifact(self, project: dict[str, Any]) -> None:
+        """Bootstrap the immutable source node before the first run is created."""
+        graph = self.store.artifact_graph()
+        if graph.current_version("source.script"):
+            return
+        source_path = self.store.validate_source(project)
+        record = ArtifactRecord.from_dict({
+            "logical_id": "source.script",
+            "version_id": f"sha256:{sha256_file(source_path)}",
+            "path": os.path.relpath(source_path, self.paths.root),
+            "producer": {"stage": "project_source", "run_id": ""},
+            "depends_on": [],
+        })
+        existing = graph._records.get(record.ref)
+        if existing is None:
+            graph.register(record)
+            self.store.events.append(
+                "artifact_registered", project_id=project["project_id"], run_id="",
+                payload={"artifact": record.to_dict(state="available"), "bootstrap": True},
+            )
+            graph = self.store.artifact_graph()
+        elif existing != record or graph._states.get(record.ref) != "available":
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  "source bootstrap artifact conflicts with project source")
+        graph.select(
+            logical_id=record.ref.logical_id, version_id=record.ref.version_id,
+            previous_version_id="", recorded_invalidated=[],
+        )
+        self.store.events.append(
+            "artifact_version_selected", project_id=project["project_id"], run_id="",
+            payload={"logical_id": record.ref.logical_id, "version_id": record.ref.version_id,
+                     "previous_version_id": "", "invalidated": []},
+        )
+
+    def _runtime_inputs(self, project: dict[str, Any], run_id: str,
+                        selection: tuple[dict[str, Any], ...] = ()) -> dict[str, dict[str, str]]:
+        """Freeze file-backed selected inputs into the run contract."""
+        graph = self.store.artifact_graph()
+        selected = {item["logical_id"]: ArtifactRef.from_dict(item) for item in selection}
+        if "source.script" not in selected:
+            version_id = graph.current_version("source.script")
+            if version_id:
+                selected["source.script"] = ArtifactRef("source.script", version_id)
+        inputs: dict[str, dict[str, str]] = {}
+        for logical_id in ("source.script", "style.reference"):
+            ref = selected.get(logical_id)
+            if ref is None:
+                continue
+            record = graph.get(ref.logical_id, ref.version_id)
+            absolute_path = self.store.artifact_path(record.path)
+            if not os.path.isfile(absolute_path):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      f"runtime input is missing or changed: {logical_id}")
+            with open(absolute_path, "rb") as handle:
+                content = handle.read()
+            if hashlib.sha256(content).hexdigest() != ref.version_id[7:]:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      f"runtime input is missing or changed: {logical_id}")
+            snapshot_path = os.path.join(
+                self.paths.run_dir(run_id), "inputs",
+                f"{logical_id.replace('.', '_')}-{ref.version_id[7:]}.bin",
+            )
+            atomic_write_bytes(snapshot_path, content)
+            inputs[logical_id] = {**ref.to_dict(), "path": record.path,
+                                  "snapshot_path": os.path.relpath(snapshot_path, self.paths.root)}
+        if "source.script" not in inputs:
+            source_path = self.store.validate_source(project)
+            with open(source_path, "rb") as handle:
+                content = handle.read()
+            content_hash = hashlib.sha256(content).hexdigest()
+            if content_hash != str(project["source"].get("sha256", "")):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "runtime source changed while snapshotting")
+            snapshot_path = os.path.join(
+                self.paths.run_dir(run_id), "inputs", f"source_script-{content_hash}.bin",
+            )
+            atomic_write_bytes(snapshot_path, content)
+            inputs["source.script"] = {
+                "logical_id": "source.script", "version_id": f"sha256:{content_hash}",
+                "path": os.path.relpath(source_path, self.paths.root),
+                "snapshot_path": os.path.relpath(snapshot_path, self.paths.root),
+            }
+        return inputs
+
+    def _runtime_input_path(self, contract: dict[str, Any], logical_id: str, *, fallback_path: str = "") -> str:
+        inputs = contract.get("runtime_inputs")
+        value = inputs.get(logical_id) if isinstance(inputs, dict) else None
+        if not isinstance(value, dict):
+            if logical_id == "source.script" and fallback_path:
+                return fallback_path
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, f"runtime input is absent: {logical_id}")
+        ref = ArtifactRef.from_dict(value)
+        path = value.get("snapshot_path")
+        if not isinstance(path, str):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, f"runtime input snapshot is invalid: {logical_id}")
+        absolute_path = self.store.artifact_path(path)
+        if not os.path.isfile(absolute_path) or sha256_file(absolute_path) != ref.version_id[7:]:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"runtime input is missing or changed: {logical_id}")
+        return absolute_path
+
+    def _stage_private_input(
+        self,
+        contract: dict[str, Any],
+        logical_id: str,
+        output_dir: str,
+        *,
+        fallback_path: str = "",
+    ) -> str:
+        """Copy verified contract input bytes into the active stage directory.
+
+        Adapters intentionally accept paths.  Passing a run snapshot directly
+        would leave a check-to-use interval after the project lock is released,
+        so the adapter only receives this newly materialized immutable input.
+        """
+        inputs = contract.get("runtime_inputs")
+        value = inputs.get(logical_id) if isinstance(inputs, dict) else None
+        if isinstance(value, dict):
+            ref = ArtifactRef.from_dict(value)
+            snapshot_path = value.get("snapshot_path")
+            if not isinstance(snapshot_path, str):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      f"runtime input snapshot is invalid: {logical_id}")
+            source_path = self.store.artifact_path(snapshot_path)
+            expected_hash = ref.version_id.removeprefix("sha256:")
+        elif logical_id == "source.script" and fallback_path:
+            source_path = fallback_path
+            expected_hash = ""
+        else:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"runtime input is absent: {logical_id}")
+        try:
+            with open(source_path, "rb") as handle:
+                content = handle.read()
+        except OSError as exc:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"runtime input is unavailable: {logical_id}") from exc
+        actual_hash = hashlib.sha256(content).hexdigest()
+        if expected_hash and actual_hash != expected_hash:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"runtime input is missing or changed: {logical_id}")
+        private_path = os.path.join(output_dir, ".runtime_inputs",
+                                    f"{safe_filename(logical_id)}-{actual_hash}.bin")
+        atomic_write_bytes(private_path, content)
+        return private_path
+
+    def _stage_private_artifact(self, *, path: str, version_id: str, logical_id: str, output_dir: str) -> str:
+        """Verify an upstream artifact once, then bind the adapter to a private copy."""
+        if not isinstance(version_id, str) or not version_id.startswith("sha256:"):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"stage artifact version is invalid: {logical_id}")
+        source_path = self.store.artifact_path(path)
+        try:
+            with open(source_path, "rb") as handle:
+                content = handle.read()
+        except OSError as exc:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"stage artifact is unavailable: {logical_id}") from exc
+        actual_hash = hashlib.sha256(content).hexdigest()
+        if actual_hash != version_id.removeprefix("sha256:"):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"stage artifact is missing or changed: {logical_id}")
+        private_path = os.path.join(output_dir, ".runtime_inputs",
+                                    f"{safe_filename(logical_id)}-{actual_hash}.bin")
+        atomic_write_bytes(private_path, content)
+        return private_path
+
+    def _relative_artifact_path(self, path: str) -> str:
+        """Normalize adapter output paths against the project, never the process CWD."""
+        if not isinstance(path, str) or not path:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "stage artifact path is invalid")
+        absolute_path = path if os.path.isabs(path) else os.path.join(self.paths.root, path)
+        relative_path = os.path.relpath(os.path.abspath(absolute_path), self.paths.root)
+        self.store.artifact_path(relative_path)
+        return relative_path
+
     def list_revisions(self) -> dict[str, Any]:
         project = self.store.load_project()
         revisions, snapshot = self.store.revision_snapshot()
@@ -253,6 +429,12 @@ class ProductionService:
         current = tuple(ArtifactRef(item["logical_id"], item["version_id"]) for item in graph.to_dict()["current"])
         if not requested or len(set(requested)) != len(requested):
             raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts are invalid")
+        direct_stage_outputs = {"storyboard.output", "visual.asset"}
+        if any(item.logical_id in direct_stage_outputs for item in requested):
+            raise ProductionError(
+                ReasonCode.OPERATION_CONTRACT_INVALID.value,
+                "stage output candidates require an explicit producer-run authority model",
+            )
         is_candidate_revision = all(graph._states.get(item) == "available" for item in requested)
         if is_candidate_revision:
             predecessor_selection, affected, successor_selection, reused = graph.revision_scope(requested)
@@ -317,6 +499,59 @@ class ProductionService:
                 return str(item.get("action"))
         return "regenerate"
 
+    def _produced_artifacts(self, *, stage: str, run_id: str, contract: dict[str, Any],
+                            artifacts: list[dict[str, Any]], events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Describe a stage's immutable output and exact input dependencies."""
+        if len(artifacts) != 1:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"{stage} must publish exactly one graph artifact")
+        artifact = dict(artifacts[0])
+        path = artifact.get("path")
+        version_id = artifact.get("version_id")
+        if not isinstance(path, str) or not isinstance(version_id, str):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "stage artifact reference is invalid")
+        relative_path = self._relative_artifact_path(path)
+        absolute_path = self.store.artifact_path(relative_path)
+        if not os.path.isfile(absolute_path) or version_id != f"sha256:{sha256_file(absolute_path)}":
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "stage artifact is missing or changed")
+        dependencies: list[dict[str, str]] = []
+        if stage == "storyboard":
+            source = contract.get("runtime_inputs", {}).get("source.script")
+            if not isinstance(source, dict):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "storyboard source input is absent")
+            dependencies.append(ArtifactRef.from_dict(source).to_dict())
+            logical_id = "storyboard.output"
+        elif stage == "visual":
+            storyboard_event = next(
+                (event for event in reversed(events) if event.get("run_id") == run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "storyboard"),
+                None,
+            )
+            storyboard_payload = ((storyboard_event or {}).get("payload") or {})
+            storyboard_outputs = storyboard_payload.get("produced_artifacts") or storyboard_payload.get("reused_artifacts") or []
+            if len(storyboard_outputs) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "visual storyboard graph output is absent")
+            dependencies.append(ArtifactRef.from_dict(storyboard_outputs[0]).to_dict())
+            style = contract.get("runtime_inputs", {}).get("style.reference")
+            if isinstance(style, dict):
+                dependencies.append(ArtifactRef.from_dict(style).to_dict())
+            logical_id = "visual.asset"
+        else:
+            raise ProductionError(ReasonCode.INTERNAL_ERROR.value, f"unknown output stage: {stage}")
+        record = ArtifactRecord.from_dict({
+            "logical_id": logical_id,
+            "version_id": version_id,
+            "path": relative_path,
+            "producer": {"stage": stage, "run_id": run_id},
+            "depends_on": dependencies,
+        })
+        # Validate the exact projection before the terminal event is durable.
+        # A bad graph transition must never be appended and discovered only on
+        # the next replay.
+        self.store.artifact_graph().commit_stage_output(record)
+        return [record.to_dict(state="available")]
+
     def _reuse_predecessor_stage(self, *, project: dict[str, Any], snapshot: ProductionSnapshot,
                                  contract: dict[str, Any], events: list[dict[str, Any]], stage: str) -> ProductionSnapshot:
         """Record verified stage reuse without scheduling a Provider operation."""
@@ -327,6 +562,10 @@ class ProductionService:
         if terminal is None:
             raise ProductionError(ReasonCode.DEPENDENCY_UNSATISFIED.value, f"cannot reuse missing predecessor {stage}")
         payload = dict(terminal.get("payload") or {})
+        # Reuse has provenance, but creates no new graph version. Keep the
+        # predecessor graph reference for a following regenerated stage.
+        if "produced_artifacts" in payload:
+            payload["reused_artifacts"] = payload.pop("produced_artifacts")
         original_stage_run_id = str(payload.get("stage_run_id", ""))
         if not original_stage_run_id:
             raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "reused stage has no authority")
@@ -362,12 +601,12 @@ class ProductionService:
             revision_id = revision_id or f"rev_{uuid.uuid4().hex}"
             if any(item["revision_id"] == revision_id for item in self.store.revisions().to_dict()["revisions"]):
                 raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision_id already exists")
+            os.makedirs(self.paths.run_dir(successor_run_id), exist_ok=False)
             contract = self._create_contract(project, successor_run_id, predecessor_run_id=predecessor_run_id,
                                              revision_id=revision_id, reuse_manifest=tuple(preview["reused_artifacts"]),
                                              predecessor_selection=tuple(preview["predecessor_selection"]),
                                              successor_selection=tuple(preview["successor_selection"]),
                                              execution_plan=tuple(preview["execution_plan"]))
-            os.makedirs(self.paths.run_dir(successor_run_id), exist_ok=False)
             atomic_write_json(self.paths.contract_file(successor_run_id), contract)
             revision = {
                 "revision_id": revision_id, "predecessor_run_id": predecessor_run_id,
@@ -843,19 +1082,21 @@ class ProductionService:
         return model_name or "unconfigured"
 
     def _create_contract(self, project: dict[str, Any], run_id: str, *, predecessor_run_id: str = "",
-                         revision_id: str = "", reuse_manifest: tuple[dict[str, Any], ...] = (),
-                         predecessor_selection: tuple[dict[str, Any], ...] = (),
-                         successor_selection: tuple[dict[str, Any], ...] = (),
-                         execution_plan: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
+                          revision_id: str = "", reuse_manifest: tuple[dict[str, Any], ...] = (),
+                          predecessor_selection: tuple[dict[str, Any], ...] = (),
+                          successor_selection: tuple[dict[str, Any], ...] = (),
+                          execution_plan: tuple[dict[str, Any], ...] = ()) -> dict[str, Any]:
         storyboard = project["production"]["storyboard"]
         visual = project["production"]["visual"]
+        runtime_inputs = self._runtime_inputs(project, run_id, successor_selection)
+        source_input = runtime_inputs["source.script"]
         contract = {
             "schema_version": PROJECT_SCHEMA_VERSION,
             "run_id": run_id,
             "created_at": utc_now(),
             "project_spec_fingerprint": fingerprint(project),
-            "source_fingerprint": project["source"]["sha256"],
-            "storyboard_source_fingerprint": storyboard_source_sha256(self.store.source_path(project)),
+            "source_fingerprint": source_input["version_id"][7:],
+            "storyboard_source_fingerprint": source_input["version_id"][7:],
             "dag_version": M2_DAG_VERSION if visual.get("enabled") else DAG_VERSION,
             "adapter_contract_versions": {
                 "storyboard": self.storyboard_adapter.contract_version,
@@ -881,6 +1122,7 @@ class ProductionService:
             "predecessor_selection": list(predecessor_selection),
             "successor_selection": list(successor_selection),
             "execution_plan": list(execution_plan),
+            "runtime_inputs": runtime_inputs,
         }
         contract["contract_fingerprint"] = fingerprint(contract)
         return contract
@@ -902,6 +1144,9 @@ class ProductionService:
             "code": __version__,
             "visual_adapter": self.visual_adapter.contract_version if contract.get("dag_version") == M2_DAG_VERSION else "",
         }
+        legacy_visual = expected["visual_adapter"] == "visual-adapter-m2-3-v1"
+        if legacy_visual:
+            actual["visual_adapter"] = expected["visual_adapter"]
         if actual != expected:
             raise ProductionError(
                 ReasonCode.PROJECT_CONTRACT_CHANGED.value,
@@ -1175,14 +1420,16 @@ class ProductionService:
 
     def get_status(self) -> ProductionSnapshot:
         project = self.store.load_project()
-        self.store.validate_source(project)
         events = self.store.events.read()
         snapshot = self.store.snapshot()
         if any(event.get("event_type") == "stage_completed" and (event.get("payload") or {}).get("stage") == "visual" for event in events):
             self._configure_visual_receipt_signer(project)
         if snapshot.run_id:
             contract = self.store.validate_contract(project, snapshot.run_id)
+            self.store.validate_runtime_inputs(project, contract)
             self._validate_stage_authority(project, events, snapshot, contract)
+        else:
+            self.store.validate_source(project)
         projection = snapshot.to_dict()
         current_projection = None
         try:
@@ -1236,12 +1483,12 @@ class ProductionService:
         ):
             with ProjectLock(self.paths.lock_file):
                 project = self.store.load_project()
-                source_path = self.store.validate_source(project)
                 events = self.store.events.read()
                 snapshot = self.store.snapshot()
                 contract = None
                 if snapshot.run_id:
                     contract = self.store.validate_contract(project, snapshot.run_id)
+                    source_path = self.store.validate_runtime_inputs(project, contract)["source.script"]
                     self._validate_stage_authority(project, events, snapshot, contract)
                     if snapshot.status not in {
                         ProductionStatus.COMPLETED.value,
@@ -1249,14 +1496,19 @@ class ProductionService:
                         ProductionStatus.FAILED.value,
                     }:
                         self._validate_runtime_contract(contract)
+                else:
+                    source_path = self.store.validate_source(project)
+                    self._ensure_project_source_artifact(project)
+                    events = self.store.events.read()
+                    snapshot = self.store.snapshot()
                 action = self.scheduler.next_action(snapshot, events)
 
                 if action == "stop":
                     return self._publish(snapshot)
                 if action == "create_run":
                     run_id = f"run_{uuid.uuid4().hex}"
-                    contract = self._create_contract(project, run_id)
                     os.makedirs(self.paths.run_dir(run_id), exist_ok=True)
+                    contract = self._create_contract(project, run_id)
                     atomic_write_json(self.paths.contract_file(run_id), contract)
                     self.store.events.append(
                         "run_created", project_id=project["project_id"], run_id=run_id,
@@ -1313,12 +1565,21 @@ class ProductionService:
                             raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "visual 缺少 storyboard 公开产物")
                         first_artifact = dict(artifacts[0])
                         first_artifact["artifact_id"] = "storyboard"
+                        content_bound = isinstance(contract.get("runtime_inputs"), dict)
+                        storyboard_path = self._stage_private_artifact(
+                            path=str(first_artifact["path"]), version_id=str(first_artifact["version_id"]),
+                            logical_id="storyboard.output", output_dir=output_dir,
+                        ) if content_bound else ""
+                        style_path = ""
+                        if content_bound and isinstance(contract.get("runtime_inputs", {}).get("style.reference"), dict):
+                            style_path = self._stage_private_input(contract, "style.reference", output_dir)
                         request = self.visual_adapter.plan(
                             project_id=project["project_id"], run_id=run_id, stage_run_id=stage_run_id,
                             output_dir=output_dir, storyboard_artifact={"artifact_id": "storyboard", "version_id": str(first_artifact["version_id"])},
                             settings=project["production"]["visual"],
                             artifact_versions=tuple({"artifact_id": item["logical_id"], "version_id": item["version_id"]}
                                                     for item in contract.get("successor_selection", [])),
+                            storyboard_path=storyboard_path, style_path=style_path,
                         )
                         key_id = str(project.get("integrity", {}).get("hmac_key_id", ""))
                         self.store.events.append("approval_requested", project_id=project["project_id"], run_id=run_id,
@@ -1365,11 +1626,16 @@ class ProductionService:
                         # result.  It has no provider side effect, so expiry after settlement
                         # does not invalidate recovery of that frozen outcome.
                         result = self.visual_adapter.publish_result(stage_run_id=stage_run_id, output_dir=output_dir, operation=latest_operation.to_dict())
+                        published_artifacts = [{**item, "path": self._relative_artifact_path(str(item["path"]))} for item in result.artifacts]
                         self.store.events.append("stage_completed", project_id=project["project_id"], run_id=run_id,
-                                                 payload={"stage": "visual", "stage_run_id": stage_run_id,
-                                                          "authority_path": os.path.relpath(result.authority_path, self.paths.root), "authority_hash": result.authority_hash,
-                                                          "authority_files": [{"path": os.path.relpath(item["path"], self.paths.root), "sha256": item["sha256"]} for item in result.authority_files],
-                                                          "artifacts": [{**item, "path": os.path.relpath(str(item["path"]), self.paths.root)} for item in result.artifacts]})
+                                                  payload={"stage": "visual", "stage_run_id": stage_run_id,
+                                                           "authority_path": self._relative_artifact_path(result.authority_path), "authority_hash": result.authority_hash,
+                                                           "authority_files": [{"path": self._relative_artifact_path(item["path"]), "sha256": item["sha256"]} for item in result.authority_files],
+                                                           "artifacts": published_artifacts,
+                                                           "produced_artifacts": self._produced_artifacts(
+                                                               stage="visual", run_id=run_id, contract=contract,
+                                                               artifacts=published_artifacts, events=events,
+                                                           )})
                         return self._snapshot_and_project()
                     if latest_operation.status == "settled" and latest_operation.outcome == "failed":
                         self.store.events.append("stage_failed", project_id=project["project_id"], run_id=run_id,
@@ -1391,6 +1657,9 @@ class ProductionService:
                     )
                 settings = project["production"]["storyboard"]
                 expected = self._storyboard_expected(contract)
+                source_path = self._stage_private_input(
+                    contract, "source.script", output_dir, fallback_path=source_path,
+                )
 
             try:
                 result = self.storyboard_adapter.execute(
@@ -1429,18 +1698,23 @@ class ProductionService:
                     common = {
                         "stage": "storyboard",
                         "stage_run_id": child_run_id,
-                        "authority_path": os.path.relpath(result.authority_path, self.paths.root)
+                        "authority_path": self._relative_artifact_path(result.authority_path)
                         if result.authority_path else "",
                         "authority_hash": result.authority_hash,
                         "authority_files": [
-                            {"path": os.path.relpath(item["path"], self.paths.root), "sha256": item["sha256"]}
+                            {"path": self._relative_artifact_path(item["path"]), "sha256": item["sha256"]}
                             for item in result.authority_files
                         ],
                         "artifacts": [
-                            {**artifact, "path": os.path.relpath(str(artifact.get("path", "")), self.paths.root)}
+                            {**artifact, "path": self._relative_artifact_path(str(artifact.get("path", "")))}
                             for artifact in result.artifacts
                         ],
                     }
+                    if result.status in {"completed", "needs_review"} and result.artifacts:
+                        common["produced_artifacts"] = self._produced_artifacts(
+                            stage="storyboard", run_id=run_id, contract=contract,
+                            artifacts=common["artifacts"], events=current_events,
+                        )
                     if result.status in {"completed", "needs_review"} and (
                         not result.authority_path or not result.authority_hash
                         or not result.authority_files or not result.artifacts
@@ -1544,6 +1818,8 @@ class ProductionService:
             if snapshot.run_id:
                 contract = self.store.validate_contract(project, snapshot.run_id)
                 checks.append({"name": "run_contract", "status": "passed"})
+                self.store.validate_runtime_inputs(project, contract)
+                checks.append({"name": "runtime_inputs", "status": "passed"})
                 self._validate_stage_authority(project, events, snapshot, contract)
                 stage_run_id = f"storyboard-{snapshot.run_id.removeprefix('run_')}"
                 output_dir = self.paths.storyboard_dir(snapshot.run_id, stage_run_id)

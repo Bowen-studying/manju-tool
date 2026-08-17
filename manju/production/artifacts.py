@@ -111,6 +111,11 @@ class ArtifactGraph:
                 changed = payload["revision"].get("changed")
                 if selection is not None:
                     graph.apply_revision_selection(changed)
+            elif event_type == "stage_completed" and isinstance(payload.get("produced_artifacts"), list):
+                # M3.4 commits a stage result and its graph projection in one
+                # durable event.  Old stage events deliberately remain readable.
+                for item in payload["produced_artifacts"]:
+                    graph.commit_stage_output(ArtifactRecord.from_dict(item))
         return graph
 
     def register(self, record: ArtifactRecord) -> None:
@@ -231,6 +236,28 @@ class ArtifactGraph:
         self._states[target] = "current"
         self._current[logical_id] = target
         return expected
+
+    def commit_stage_output(self, record: ArtifactRecord) -> tuple[ArtifactRef, ...]:
+        """Register and select a newly completed stage output atomically in replay."""
+        existing = self._records.get(record.ref)
+        if existing is not None:
+            if self._states[record.ref] == "current":
+                raise _invalid("stage output version is already current")
+            # A content-addressed artifact may be reproduced from a later input
+            # version.  Its prior provenance is immutable in the old terminal
+            # event; the graph projection records the currently selected
+            # materialization and its current dependencies.
+            self._records[record.ref] = record
+            self._states[record.ref] = "available"
+        else:
+            self.register(record)
+        previous = self._current.get(record.ref.logical_id)
+        return self.select(
+            logical_id=record.ref.logical_id,
+            version_id=record.ref.version_id,
+            previous_version_id=previous.version_id if previous else "",
+            recorded_invalidated=[item.to_dict() for item in self.invalidated_by(previous)] if previous else [],
+        )
 
     def get(self, logical_id: str, version_id: str) -> ArtifactRecord:
         ref = ArtifactRef.from_dict({"logical_id": logical_id, "version_id": version_id})

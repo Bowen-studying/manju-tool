@@ -49,6 +49,43 @@ def _fingerprint(data: bytes) -> str:
     return "sha256:" + hashlib.sha256(data).hexdigest()
 
 
+def _prompt_material(path: str, *, label: str) -> str:
+    """Return public, deterministic artifact content for the approved prompt."""
+    try:
+        data = open(path, "rb").read()
+    except OSError as exc:
+        raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, f"{label} input is unavailable") from exc
+    if len(data) > 64 * 1024:
+        raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, f"{label} input is too large for an approved prompt")
+    try:
+        value = json.loads(data.decode("utf-8"))
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  f"{label} input must be a public text or JSON artifact") from exc
+
+
+def _render_provider_request(settings: dict[str, Any], *, storyboard_path: str = "", style_path: str = "") -> dict[str, str | int] | None:
+    value = settings.get("provider_request")
+    if value is None:
+        return None
+    request = validate_provider_request(value)
+    if not storyboard_path:
+        return request
+    prompt = request.get("prompt")
+    if not isinstance(prompt, str) or not prompt.strip():
+        raise ProductionError(ReasonCode.APPROVAL_CONTRACT_INVALID.value,
+                              "content-bound visual requests require a prompt template")
+    material = [f"Storyboard artifact:\n{_prompt_material(storyboard_path, label='storyboard')}" ]
+    if style_path:
+        material.append(f"Style reference:\n{_prompt_material(style_path, label='style')}" )
+    request["prompt"] = prompt.rstrip() + "\n\n" + "\n\n".join(material)
+    return request
+
+
 def _receipt_binding(value: dict[str, Any]) -> str:
     """Hash every observed field before it can enter signed settlement."""
     unsigned = {key: item for key, item in value.items() if key not in {"observation_sha256", "receipt_hmac", "receipt_hmac_key_id"}}
@@ -123,7 +160,7 @@ class VisualStageAdapter:
     creation cannot re-download or alter the provider's artifact.
     """
 
-    contract_version = "visual-adapter-m2-3-v1"
+    contract_version = "visual-adapter-m3-4-v1"
     receipt_name = "visual_receipt.json"
 
     def __init__(self, provider: VisualProvider | None = None, *, provider_registry: VisualProviderRegistry | None = None):
@@ -250,7 +287,7 @@ class VisualStageAdapter:
     def map_published_approval(self, record: dict[str, Any]) -> ApprovalRequest:
         if not isinstance(record, dict) or set(record) != {"published_approval", "adapter_contract_version"}:
             raise ProductionError(ReasonCode.APPROVAL_CONTRACT_INVALID.value, "visual adapter only accepts published_approval")
-        if record.get("adapter_contract_version") != self.contract_version:
+        if record.get("adapter_contract_version") not in {self.contract_version, "visual-adapter-m2-3-v1"}:
             raise ProductionError(ReasonCode.APPROVAL_CONTRACT_INVALID.value, "visual adapter contract version mismatch")
         value = record["published_approval"]
         if not isinstance(value, dict) or "state" in value or "paid_ledger" in value:
@@ -258,13 +295,14 @@ class VisualStageAdapter:
         return ApprovalRequest.from_dict(value)
 
     def plan(self, *, project_id: str, run_id: str, stage_run_id: str, output_dir: str,
-             storyboard_artifact: dict[str, str], settings: dict[str, Any],
-             artifact_versions: tuple[dict[str, str], ...] = ()) -> ApprovalRequest:
+              storyboard_artifact: dict[str, str], settings: dict[str, Any],
+              artifact_versions: tuple[dict[str, str], ...] = (), storyboard_path: str = "",
+              style_path: str = "") -> ApprovalRequest:
         os.makedirs(output_dir, exist_ok=True)
         operation_id = "visual-" + run_id.removeprefix("run_")
-        provider_request = settings.get("provider_request")
-        if provider_request is not None:
-            provider_request = validate_provider_request(provider_request)
+        provider_request = _render_provider_request(
+            settings, storyboard_path=storyboard_path, style_path=style_path,
+        )
         request_fingerprint = ""
         if provider_request is not None:
             encoded_request = json.dumps(provider_request, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
@@ -397,7 +435,8 @@ class VisualStageAdapter:
         operation = value.get("operation") if isinstance(value.get("operation"), dict) else {}
         if (
             set(value) != {"schema_version", "stage_run_id", "artifact", "receipt", "operation", "adapter_contract_version", "settlement"}
-            or value.get("schema_version") != "2" or value.get("stage_run_id") != stage_run_id or value.get("adapter_contract_version") != self.contract_version
+            or value.get("schema_version") != "2" or value.get("stage_run_id") != stage_run_id
+            or value.get("adapter_contract_version") not in {self.contract_version, "visual-adapter-m2-3-v1"}
             or set(artifact) != {"path", "sha256", "media_type"} or artifact.get("media_type") not in _MIME_EXTENSIONS
             or artifact.get("path") != _MIME_EXTENSIONS[artifact.get("media_type")] or set(receipt_ref) != {"path", "sha256"}
             or receipt_ref.get("path") != self.receipt_name or set(operation) != {"operation_id", "provider_job_id", "result_fingerprint"}
