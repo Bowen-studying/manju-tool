@@ -16,6 +16,7 @@ DAG_VERSION = "production-m1-v1"
 M2_DAG_VERSION = "production-m2-v1"
 M4_DAG_VERSION = "production-m4-v1"
 M4_1_DAG_VERSION = "production-m4.1-v1"
+M4_2_DAG_VERSION = "production-m4.2-v1"
 M2_CONTRACT_VERSION = "1"
 
 
@@ -45,6 +46,14 @@ def stages_for_dag(dag_version: str, declared: Any = None) -> tuple[str, ...]:
             ("storyboard", "voice_script", "voice_director", "visual"),
         }:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M4.1 stage sequence is invalid")
+        return candidate
+    elif dag_version == M4_2_DAG_VERSION:
+        candidate = tuple(declared) if declared is not None else ()
+        if candidate not in {
+            ("storyboard", "voice_script", "voice_director", "voice_tts"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "visual"),
+        }:
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M4.2 stage sequence is invalid")
         return candidate
     else:
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"unsupported dag: {dag_version}")
@@ -95,6 +104,7 @@ class ReasonCode(str, Enum):
     VISUAL_FAILED = "VISUAL_FAILED"
     VOICE_SCRIPT_FAILED = "VOICE_SCRIPT_FAILED"
     VOICE_DIRECTOR_FAILED = "VOICE_DIRECTOR_FAILED"
+    VOICE_TTS_FAILED = "VOICE_TTS_FAILED"
 
 
 REASON_DEFAULTS: dict[str, tuple[str, int]] = {
@@ -129,6 +139,7 @@ REASON_DEFAULTS.update({
     ReasonCode.VISUAL_FAILED.value: ("mock 视觉阶段失败", 1),
     ReasonCode.VOICE_SCRIPT_FAILED.value: ("配音脚本阶段失败", 1),
     ReasonCode.VOICE_DIRECTOR_FAILED.value: ("配音导演阶段失败", 1),
+    ReasonCode.VOICE_TTS_FAILED.value: ("TTS 音频阶段失败", 1),
 })
 
 

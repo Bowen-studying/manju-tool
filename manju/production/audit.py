@@ -86,7 +86,7 @@ def _project_evidence_allowed(relative: str, source_relative: str, artifact_path
         return True
     if len(parts) == 4 and parts[:3] == ["production", "manual", "dispatches"] and parts[-1].endswith(".json"):
         return True
-    return len(parts) >= 4 and parts[:2] == ["production", "runs"] and os.path.splitext(parts[-1])[1].lower() in {".json", ".bin", ".sqlite", ".png", ".jpg", ".jpeg", ".webp"}
+    return len(parts) >= 4 and parts[:2] == ["production", "runs"] and os.path.splitext(parts[-1])[1].lower() in {".json", ".bin", ".sqlite", ".wav", ".png", ".jpg", ".jpeg", ".webp"}
 
 
 def _worker_result_allowed(relative: str) -> bool:

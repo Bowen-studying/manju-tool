@@ -49,6 +49,7 @@ class ProjectStore:
         visual = production.get("visual") if isinstance(production, dict) else None
         voice_script = production.get("voice_script", {"enabled": False}) if isinstance(production, dict) else None
         voice_director = production.get("voice_director", {"enabled": False}) if isinstance(production, dict) else None
+        voice_tts = production.get("voice_tts", {"enabled": False}) if isinstance(production, dict) else None
         if not isinstance(source, dict) or source.get("type") not in {"novel", "script", "storyboard"}:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "source.type 不受支持")
         if not isinstance(source.get("path"), str) or not isinstance(source.get("sha256"), str):
@@ -80,6 +81,16 @@ class ProjectStore:
             or voice_director.get("max_steps") < 4
         ):
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_director binding is invalid")
+        if not isinstance(voice_tts, dict) or not isinstance(voice_tts.get("enabled"), bool):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts contract is invalid")
+        if voice_tts.get("enabled") and (
+            not voice_director.get("enabled")
+            or voice_tts.get("mode") != "offline_mock"
+            or voice_tts.get("schema_version") != "voice-audio-v1"
+            or not isinstance(voice_tts.get("model_profile"), str)
+            or not voice_tts.get("model_profile")
+        ):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts binding is invalid")
         if visual.get("enabled"):
             engine = visual.get("engine")
             profile = visual.get("provider_profile")

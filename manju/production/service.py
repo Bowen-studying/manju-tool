@@ -23,6 +23,7 @@ from manju.production.adapters.storyboard import StoryboardStageAdapter
 from manju.production.adapters.visual import VisualStageAdapter
 from manju.production.adapters.voice_script import VoiceScriptStageAdapter
 from manju.production.adapters.voice_director import VoiceDirectorStageAdapter
+from manju.production.adapters.voice_tts import VoiceTTSStageAdapter
 from manju.production.adapters.base import StageResult
 from manju.production.approvals import ApprovalRequest, Grant, contractual_tariff_usage, create_contractual_tariff
 from manju.production.artifacts import ArtifactGraph, ArtifactRecord, ArtifactRef
@@ -41,6 +42,7 @@ from manju.production.models import (
     M2_DAG_VERSION,
     M4_DAG_VERSION,
     M4_1_DAG_VERSION,
+    M4_2_DAG_VERSION,
     PROJECT_SCHEMA_VERSION,
     ProductionError,
     ProductionSnapshot,
@@ -86,6 +88,8 @@ def initialize_project(
     voice_director_enabled: bool = False,
     voice_director_max_model_calls: int = 1,
     voice_director_max_steps: int = 8,
+    voice_tts_enabled: bool = False,
+    voice_tts_model_profile: str = "deterministic-fake-tts-v1",
 ) -> ProductionSnapshot:
     source = os.path.abspath(source)
     if source_type not in {"novel", "script", "storyboard"}:
@@ -96,6 +100,10 @@ def initialize_project(
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-director requires voice-script")
     if voice_director_enabled and (voice_director_max_model_calls < 1 or voice_director_max_steps < 4):
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-director budget is invalid")
+    if voice_tts_enabled and not voice_director_enabled:
+        raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-tts requires voice-director")
+    if voice_tts_enabled and (not isinstance(voice_tts_model_profile, str) or not voice_tts_model_profile.strip()):
+        raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-tts model profile is invalid")
     if visual_enabled and (visual_maximum_paid_calls < 1 or not str(visual_maximum_amount).isdigit()):
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "visual mock 预算无效")
     if visual_enabled and (not isinstance(visual_provider_profile, str) or not visual_provider_profile or not isinstance(visual_operation_kind, str) or not visual_operation_kind or not isinstance(visual_provider_request, (dict, type(None)))):
@@ -172,6 +180,12 @@ def initialize_project(
                 "max_model_calls": voice_director_max_model_calls if voice_director_enabled else 0,
                 "max_steps": voice_director_max_steps if voice_director_enabled else 0,
             },
+            "voice_tts": {
+                "enabled": voice_tts_enabled,
+                "mode": "offline_mock" if voice_tts_enabled else "",
+                "schema_version": "voice-audio-v1" if voice_tts_enabled else "",
+                "model_profile": voice_tts_model_profile if voice_tts_enabled else "",
+            },
             "voice": {"enabled": False},
             "video": {"enabled": False},
         },
@@ -228,6 +242,7 @@ class ProductionService:
         visual_adapter: VisualStageAdapter | None = None,
         voice_script_adapter: VoiceScriptStageAdapter | None = None,
         voice_director_adapter: VoiceDirectorStageAdapter | None = None,
+        voice_tts_adapter: VoiceTTSStageAdapter | None = None,
         hmac_key_provider: HmacKeyProvider | None = None,
         listeners: tuple[SnapshotListener, ...] = (),
     ):
@@ -238,6 +253,10 @@ class ProductionService:
         self.visual_adapter = visual_adapter or VisualStageAdapter()
         self.voice_script_adapter = voice_script_adapter or VoiceScriptStageAdapter()
         self.voice_director_adapter = voice_director_adapter or VoiceDirectorStageAdapter()
+        candidate_voice_tts = voice_tts_adapter or VoiceTTSStageAdapter()
+        if type(candidate_voice_tts) is not VoiceTTSStageAdapter:
+            raise TypeError("M4.2 offline TTS accepts only VoiceTTSStageAdapter")
+        self.voice_tts_adapter = candidate_voice_tts
         self.scheduler = ProductionScheduler()
         self.listeners = listeners
 
@@ -492,7 +511,7 @@ class ProductionService:
         current = tuple(ArtifactRef(item["logical_id"], item["version_id"]) for item in graph.to_dict()["current"])
         if not requested or len(set(requested)) != len(requested):
             raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts are invalid")
-        direct_stage_outputs = {"storyboard.output", "voice_script.main", "voice_direction.main", "visual.asset"}
+        direct_stage_outputs = {"storyboard.output", "voice_script.main", "voice_direction.main", "voice_audio.main", "visual.asset"}
         if any(item.logical_id in direct_stage_outputs for item in requested):
             raise ProductionError(
                 ReasonCode.OPERATION_CONTRACT_INVALID.value,
@@ -503,12 +522,15 @@ class ProductionService:
             predecessor_selection, affected, successor_selection, reused = graph.revision_scope(requested)
             voice_script_enabled = project.get("production", {}).get("voice_script", {}).get("enabled")
             voice_director_enabled = project.get("production", {}).get("voice_director", {}).get("enabled")
+            voice_tts_enabled = project.get("production", {}).get("voice_tts", {}).get("enabled")
             visual_enabled = project.get("production", {}).get("visual", {}).get("enabled")
             configured_stages = ["storyboard"]
             if voice_script_enabled:
                 configured_stages.append("voice_script")
             if voice_director_enabled:
                 configured_stages.append("voice_director")
+            if voice_tts_enabled:
+                configured_stages.append("voice_tts")
             if visual_enabled:
                 configured_stages.append("visual")
             configured_stages = tuple(configured_stages)
@@ -564,6 +586,7 @@ class ProductionService:
                     or (stage == "visual" and bool({"source.script", "style.reference"} & changed_ids))
                     or (stage == "voice_script" and "source.script" in changed_ids)
                     or (stage == "voice_director" and bool({"source.script", "voice_director.policy"} & changed_ids))
+                    or (stage == "voice_tts" and bool({"source.script", "voice_director.policy"} & changed_ids))
                 ) else "reuse",
                 "artifact_versions": [ref.to_dict() for ref, record in sorted(graph._records.items())
                                       if record.producer_stage == stage and ref not in affected_set],
@@ -653,6 +676,19 @@ class ProductionService:
                 ArtifactRef.from_dict(policy).to_dict(),
             ])
             logical_id = "voice_direction.main"
+        elif stage == "voice_tts":
+            director_event = next(
+                (event for event in reversed(events) if event.get("run_id") == run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "voice_director"),
+                None,
+            )
+            director_payload = ((director_event or {}).get("payload") or {})
+            director_outputs = director_payload.get("produced_artifacts") or director_payload.get("reused_artifacts") or []
+            if len(director_outputs) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-tts voice-direction graph output is absent")
+            dependencies.append(ArtifactRef.from_dict(director_outputs[0]).to_dict())
+            logical_id = "voice_audio.main"
         else:
             raise ProductionError(ReasonCode.INTERNAL_ERROR.value, f"unknown output stage: {stage}")
         record = ArtifactRecord.from_dict({
@@ -1207,9 +1243,26 @@ class ProductionService:
         visual = project["production"]["visual"]
         voice_script = project["production"].get("voice_script", {"enabled": False})
         voice_director = project["production"].get("voice_director", {"enabled": False})
+        voice_tts = project["production"].get("voice_tts", {"enabled": False})
+        if voice_tts.get("enabled"):
+            configured_profile = voice_tts.get("model_profile")
+            adapter_profile = self.voice_tts_adapter.model_profile
+            if configured_profile != adapter_profile:
+                raise ProductionError(
+                    ReasonCode.PROJECT_CONTRACT_CHANGED.value,
+                    "voice-tts model profile does not match the configured project profile",
+                )
+            if not getattr(self.voice_tts_adapter.model_port, "idempotency_supported", False):
+                raise ProductionError(
+                    ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value,
+                    "voice-tts model must support idempotent calls",
+                )
         runtime_inputs = self._runtime_inputs(project, run_id, successor_selection)
         source_input = runtime_inputs["source.script"]
-        if voice_director.get("enabled"):
+        if voice_tts.get("enabled"):
+            dag_version = M4_2_DAG_VERSION
+            stage_sequence = ["storyboard", "voice_script", "voice_director", "voice_tts"] + (["visual"] if visual.get("enabled") else [])
+        elif voice_director.get("enabled"):
             dag_version = M4_1_DAG_VERSION
             stage_sequence = ["storyboard", "voice_script", "voice_director"] + (["visual"] if visual.get("enabled") else [])
         elif voice_script.get("enabled"):
@@ -1232,10 +1285,12 @@ class ProductionService:
                 "visual": self.visual_adapter.contract_version if visual.get("enabled") else "",
                 "voice_script": self.voice_script_adapter.contract_version if voice_script.get("enabled") else "",
                 "voice_director": self.voice_director_adapter.contract_version if voice_director.get("enabled") else "",
+                "voice_tts": self.voice_tts_adapter.contract_version if voice_tts.get("enabled") else "",
             },
             "models": {
                 "storyboard": self._configured_model(),
                 "voice_director": self.voice_director_adapter.model_profile if voice_director.get("enabled") else "",
+                "voice_tts": self.voice_tts_adapter.model_profile if voice_tts.get("enabled") else "",
             },
             "prompt_versions": {
                 "storyboard_supervisor": SUPERVISOR_AGENT_VERSION,
@@ -1250,6 +1305,7 @@ class ProductionService:
             "visual_settings": visual,
             "voice_script_settings": voice_script,
             "voice_director_settings": voice_director,
+            "voice_tts_settings": voice_tts,
             "predecessor_run_id": predecessor_run_id,
             "revision_id": revision_id,
             "reuse_manifest": list(reuse_manifest),
@@ -1265,6 +1321,7 @@ class ProductionService:
         expected = {
             "model": contract.get("models", {}).get("storyboard"),
             "voice_director_model": contract.get("models", {}).get("voice_director", ""),
+            "voice_tts_model": contract.get("models", {}).get("voice_tts", ""),
             "adapter": contract.get("adapter_contract_versions", {}).get("storyboard"),
             "prompt": contract.get("prompt_versions", {}).get("storyboard_supervisor"),
             "tool": contract.get("tool_protocol_versions", {}).get("storyboard_supervisor"),
@@ -1272,6 +1329,7 @@ class ProductionService:
             "visual_adapter": contract.get("adapter_contract_versions", {}).get("visual", ""),
             "voice_script_adapter": contract.get("adapter_contract_versions", {}).get("voice_script", ""),
             "voice_director_adapter": contract.get("adapter_contract_versions", {}).get("voice_director", ""),
+            "voice_tts_adapter": contract.get("adapter_contract_versions", {}).get("voice_tts", ""),
             "stage_sequence": list(stages_for_dag(
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             )),
@@ -1279,6 +1337,9 @@ class ProductionService:
         actual = {
             "model": self._configured_model(),
             "voice_director_model": self.voice_director_adapter.model_profile if "voice_director" in stages_for_dag(
+                str(contract.get("dag_version", "")), contract.get("stage_sequence")
+            ) else "",
+            "voice_tts_model": self.voice_tts_adapter.model_profile if "voice_tts" in stages_for_dag(
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             ) else "",
             "adapter": self.storyboard_adapter.contract_version,
@@ -1292,6 +1353,9 @@ class ProductionService:
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             ) else "",
             "voice_director_adapter": self.voice_director_adapter.contract_version if "voice_director" in stages_for_dag(
+                str(contract.get("dag_version", "")), contract.get("stage_sequence")
+            ) else "",
+            "voice_tts_adapter": self.voice_tts_adapter.contract_version if "voice_tts" in stages_for_dag(
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             ) else "",
             "stage_sequence": list(stages_for_dag(
@@ -1338,7 +1402,7 @@ class ProductionService:
     ) -> None:
         payload = terminal.get("payload") if isinstance(terminal.get("payload"), dict) else {}
         stage = str(payload.get("stage", ""))
-        if stage not in {"storyboard", "voice_script", "voice_director", "visual"}:
+        if stage not in {"storyboard", "voice_script", "voice_director", "voice_tts", "visual"}:
             raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "terminal stage is unsupported")
         authority_path = str(payload.get("authority_path", ""))
         expected_hash = str(payload.get("authority_hash", ""))
@@ -1514,6 +1578,42 @@ class ProductionService:
                 or expected_artifacts != recorded_artifacts
             ):
                 raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-director authority does not match terminal event")
+        elif stage == "voice_tts":
+            scheduled_id = f"voice-tts-{snapshot.run_id.removeprefix('run_')}"
+            output_dir = self.paths.voice_tts_dir(snapshot.run_id, scheduled_id)
+            director_event = next(
+                (event for event in reversed(events) if event.get("run_id") == snapshot.run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "voice_director"), None,
+            )
+            director_outputs = ((director_event or {}).get("payload") or {}).get("produced_artifacts") or ((director_event or {}).get("payload") or {}).get("reused_artifacts") or []
+            if len(director_outputs) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-tts authority input is absent")
+            direction_ref = ArtifactRef.from_dict(director_outputs[0]).to_dict()
+            inspected = self.voice_tts_adapter.inspect(
+                stage_run_id=scheduled_id, output_dir=output_dir,
+                voice_direction_ref=direction_ref,
+                voice_direction_path=os.path.join(output_dir, ".runtime_inputs", f"voice_direction.main-{direction_ref['version_id'][7:]}.bin"),
+            )
+            expected_authority = os.path.relpath(os.path.join(output_dir, self.voice_tts_adapter.authority_name), self.paths.root)
+            expected_artifacts = {
+                (os.path.realpath(str(item.get("path", ""))), str(item.get("version_id", "")))
+                for item in (inspected.artifacts if inspected is not None else ())
+            }
+            recorded_artifacts = {
+                (os.path.realpath(os.path.join(self.paths.root, str(item.get("path", "")))), str(item.get("version_id", "")))
+                for item in artifacts or [] if isinstance(item, dict)
+            }
+            if (
+                inspected is None or inspected.status != "completed"
+                or inspected.stage_run_id != payload.get("stage_run_id")
+                or payload.get("stage_run_id") != scheduled_id
+                or authority_path != expected_authority
+                or inspected.authority_hash != expected_hash
+                or os.path.realpath(inspected.authority_path) != absolute
+                or expected_artifacts != recorded_artifacts
+            ):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-tts authority does not match terminal event")
         elif stage == "visual":
             scheduled_id = f"visual-{snapshot.run_id.removeprefix('run_')}"
             output_dir = self.paths.visual_dir(snapshot.run_id, scheduled_id)
@@ -1777,6 +1877,45 @@ class ProductionService:
                 "status": status, "reason": reason, "artifact": artifact_dto,
                 "inputs": input_dto, "next_actions": []}
 
+    def get_voice_tts_status(self) -> dict[str, Any]:
+        """Return a path-free DTO for the offline M4.2 audio stage."""
+        snapshot = self.get_status()
+        events = self.store.events.read()
+        terminal = next(
+            (event for event in reversed(events) if event.get("run_id") == snapshot.run_id
+             and event.get("event_type") in {"stage_completed", "stage_failed", "stage_needs_review"}
+             and (event.get("payload") or {}).get("stage") == "voice_tts"), None,
+        )
+        running = has_event(events, snapshot.run_id, "stage_scheduled", "voice_tts")
+        status = "running" if running else "pending"
+        reason = {"code": ReasonCode.PROJECT_READY.value, "message": ""}
+        artifact_dto: dict[str, Any] | None = None
+        inputs: list[dict[str, str]] = []
+        if terminal is not None:
+            payload = terminal.get("payload") or {}
+            if terminal.get("event_type") == "stage_completed":
+                status = "reused" if payload.get("reused_from") else "completed"
+                records = payload.get("produced_artifacts") or payload.get("reused_artifacts") or []
+                artifacts = payload.get("artifacts") or []
+                if len(records) == 1 and len(artifacts) == 1:
+                    record = ArtifactRecord.from_dict(records[0])
+                    value = read_json(self.store.artifact_path(str(artifacts[0].get("path", ""))))
+                    if not isinstance(value, dict) or value.get("schema_version") != "voice-audio-v1":
+                        raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-audio DTO source is invalid")
+                    audio_value = value.get("audio") if isinstance(value.get("audio"), dict) else {}
+                    artifact_dto = {"logical_id": record.ref.logical_id, "version_id": record.ref.version_id,
+                                    "entry_count": value.get("entry_count"),
+                                    "audio": {"sha256": audio_value.get("sha256"), "media_type": audio_value.get("media_type")},
+                                    "engine": value.get("engine")}
+                    inputs = [item.to_dict() for item in record.depends_on]
+            else:
+                status = "failed" if terminal.get("event_type") == "stage_failed" else "needs_review"
+                reason = {"code": str(payload.get("reason_code") or ReasonCode.VOICE_TTS_FAILED.value),
+                          "message": str(payload.get("message", ""))}
+        return {"schema_version": "1", "run_id": snapshot.run_id, "stage": "voice_tts",
+                "status": status, "reason": reason, "artifact": artifact_dto,
+                "inputs": inputs, "next_actions": []}
+
     def _record_execution_lease_acquired(self, lease: ProjectLock) -> None:
         with ProjectLock(self.paths.lock_file):
             project = self.store.load_project()
@@ -1921,6 +2060,95 @@ class ProductionService:
                 )
             return self._snapshot_and_project()
 
+    def _advance_voice_tts_action(
+        self, *, project: dict[str, Any], snapshot: ProductionSnapshot, contract: dict[str, Any]
+    ) -> ProductionSnapshot:
+        """Run the offline fake TTS child outside the project lock."""
+        run_id = snapshot.run_id
+        stage_run_id = f"voice-tts-{run_id.removeprefix('run_')}"
+        output_dir = self.paths.voice_tts_dir(run_id, stage_run_id)
+        with ProjectLock(self.paths.lock_file):
+            project = self.store.load_project()
+            events = self.store.events.read()
+            snapshot = self.store.snapshot()
+            contract = self.store.validate_contract(project, run_id)
+            self._validate_runtime_contract(contract)
+            if not has_event(events, run_id, "stage_scheduled", "voice_tts"):
+                self.store.events.append(
+                    "stage_scheduled", project_id=project["project_id"], run_id=run_id,
+                    payload={"stage": "voice_tts", "stage_invocation_id": stage_run_id},
+                )
+            events = self.store.events.read()
+            director_event = next(
+                (event for event in reversed(events) if event.get("run_id") == run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "voice_director"), None,
+            )
+            director_payload = (director_event or {}).get("payload") or {}
+            direction_public = director_payload.get("artifacts") or []
+            direction_graph = director_payload.get("produced_artifacts") or director_payload.get("reused_artifacts") or []
+            if len(direction_public) != 1 or len(direction_graph) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-tts requires voice-direction input")
+            direction_ref = ArtifactRef.from_dict(direction_graph[0]).to_dict()
+            direction_path = self._stage_private_artifact(
+                path=str(direction_public[0].get("path", "")), version_id=direction_ref["version_id"],
+                logical_id="voice_direction.main", output_dir=output_dir,
+            )
+        try:
+            result = self.voice_tts_adapter.execute(
+                stage_run_id=stage_run_id, output_dir=output_dir,
+                voice_direction_path=direction_path, voice_direction_ref=direction_ref,
+            )
+        except Exception as exc:
+            result = StageResult(
+                status="failed", stage_run_id=stage_run_id,
+                reason_code=ReasonCode.VOICE_TTS_FAILED.value,
+                message="voice-tts stage failed",
+            )
+        with ProjectLock(self.paths.lock_file):
+            current_events = self.store.events.read()
+            current_snapshot = self.store.snapshot()
+            if current_snapshot.run_id != run_id:
+                raise ProductionError(ReasonCode.PROJECT_EVENT_CHAIN_INVALID.value)
+            if not has_event(current_events, run_id, "stage_run_attached", "voice_tts"):
+                self.store.events.append(
+                    "stage_run_attached", project_id=project["project_id"], run_id=run_id,
+                    payload={"stage": "voice_tts", "stage_run_id": stage_run_id},
+                )
+            common = {
+                "stage": "voice_tts", "stage_run_id": stage_run_id,
+                "authority_path": self._relative_artifact_path(result.authority_path) if result.authority_path else "",
+                "authority_hash": result.authority_hash,
+                "authority_files": [
+                    {"path": self._relative_artifact_path(item["path"]), "sha256": item["sha256"]}
+                    for item in result.authority_files
+                ],
+                "artifacts": [
+                    {**artifact, "path": self._relative_artifact_path(str(artifact.get("path", "")))}
+                    for artifact in result.artifacts
+                ],
+            }
+            if result.status == "completed" and result.artifacts:
+                common["produced_artifacts"] = self._produced_artifacts(
+                    stage="voice_tts", run_id=run_id, contract=contract,
+                    artifacts=common["artifacts"], events=self.store.events.read(),
+                )
+            if result.status == "completed" and (
+                not result.authority_path or not result.authority_hash or not result.authority_files or not result.artifacts
+            ):
+                result = StageResult(status="failed", stage_run_id=stage_run_id,
+                                     reason_code=ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                     message="voice-tts result lacks authority or artifact bindings")
+            if result.status == "completed":
+                self.store.events.append("stage_completed", project_id=project["project_id"], run_id=run_id, payload=common)
+            else:
+                self.store.events.append(
+                    "stage_failed", project_id=project["project_id"], run_id=run_id,
+                    payload={**common, "reason_code": result.reason_code or ReasonCode.VOICE_TTS_FAILED.value,
+                             "message": "voice-tts stage failed"},
+                )
+            return self._snapshot_and_project()
+
     def advance(self) -> ProductionSnapshot:
         with ProjectLock(
             self.paths.execution_lock_file,
@@ -1935,6 +2163,10 @@ class ProductionService:
                 probe_action = self.scheduler.next_action(probe_snapshot, probe_events)
                 if probe_action == "advance_voice_director" and self._stage_execution_action(probe_contract, "voice_director") != "reuse":
                     return self._advance_voice_director_action(
+                        project=probe_project, snapshot=probe_snapshot, contract=probe_contract,
+                    )
+                if probe_action == "advance_voice_tts" and self._stage_execution_action(probe_contract, "voice_tts") != "reuse":
+                    return self._advance_voice_tts_action(
                         project=probe_project, snapshot=probe_snapshot, contract=probe_contract,
                     )
             with ProjectLock(self.paths.lock_file):
@@ -1993,7 +2225,7 @@ class ProductionService:
                         run_id=snapshot.run_id, payload={},
                     )
                     return self._snapshot_and_project()
-                if action in {"advance_storyboard", "advance_voice_script", "advance_voice_director", "advance_visual"} and contract is not None:
+                if action in {"advance_storyboard", "advance_voice_script", "advance_voice_director", "advance_voice_tts", "advance_visual"} and contract is not None:
                     stage = action.removeprefix("advance_")
                     if self._stage_execution_action(contract, stage) == "reuse":
                         return self._reuse_predecessor_stage(project=project, snapshot=snapshot, contract=contract,

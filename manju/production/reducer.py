@@ -82,6 +82,10 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
     voice_director_attached = False
     voice_director_stage_run_id = ""
     voice_director_outcome = ""
+    voice_tts_scheduled = False
+    voice_tts_attached = False
+    voice_tts_stage_run_id = ""
+    voice_tts_outcome = ""
     dag_version = "production-m1-v1"
     stage_sequence = ("storyboard",)
     pause_requested = False
@@ -183,8 +187,11 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                         and stage_outcome == "completed" and not voice_scheduled)
                     or (target_stage == "voice_director" and "voice_director" in stage_sequence
                         and voice_outcome == "completed" and not voice_director_scheduled)
+                    or (target_stage == "voice_tts" and "voice_tts" in stage_sequence
+                        and voice_director_outcome == "completed" and not voice_tts_scheduled)
                     or (target_stage == "visual" and "visual" in stage_sequence
-                        and (voice_director_outcome == "completed" if "voice_director" in stage_sequence
+                        and (voice_tts_outcome == "completed" if "voice_tts" in stage_sequence
+                             else voice_director_outcome == "completed" if "voice_director" in stage_sequence
                              else voice_outcome == "completed" if "voice_script" in stage_sequence else stage_outcome == "completed")
                         and not visual_scheduled)
                 )
@@ -197,6 +204,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                     (target_stage == "storyboard" and stage_scheduled and not stage_attached and not stage_outcome)
                     or (target_stage == "voice_script" and voice_scheduled and not voice_attached and not voice_outcome)
                     or (target_stage == "voice_director" and voice_director_scheduled and not voice_director_attached and not voice_director_outcome)
+                    or (target_stage == "voice_tts" and voice_tts_scheduled and not voice_tts_attached and not voice_tts_outcome)
                     or (target_stage == "visual" and visual_scheduled and not visual_attached and not visual_outcome)
                 )
             )
@@ -208,6 +216,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                     and not voice_outcome and payload.get("stage_run_id") == voice_stage_run_id)
                 or (target_stage == "voice_director" and "voice_director" in stage_sequence and voice_director_attached
                     and not voice_director_outcome and payload.get("stage_run_id") == voice_director_stage_run_id)
+                or (target_stage == "voice_tts" and "voice_tts" in stage_sequence and voice_tts_attached
+                    and not voice_tts_outcome and payload.get("stage_run_id") == voice_tts_stage_run_id)
                 or (target_stage == "visual" and "visual" in stage_sequence and visual_attached
                     and not visual_outcome and payload.get("stage_run_id") == visual_stage_run_id)
             )
@@ -219,7 +229,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             valid = status == ProductionStatus.PAUSED.value
         elif event_type == "run_completed":
             outcomes = {"storyboard": stage_outcome, "voice_script": voice_outcome,
-                        "voice_director": voice_director_outcome, "visual": visual_outcome}
+                        "voice_director": voice_director_outcome, "voice_tts": voice_tts_outcome,
+                        "visual": visual_outcome}
             valid = status == ProductionStatus.RUNNING.value and all(
                 outcomes[item] == "completed" for item in stage_sequence
             )
@@ -410,6 +421,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                     voice_scheduled = True
                 elif target_stage == "voice_director":
                     voice_director_scheduled = True
+                elif target_stage == "voice_tts":
+                    voice_tts_scheduled = True
                 else:
                     visual_scheduled = True
             else:
@@ -422,6 +435,9 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 elif target_stage == "voice_director":
                     voice_director_attached = True
                     voice_director_stage_run_id = str(payload.get("stage_run_id", ""))
+                elif target_stage == "voice_tts":
+                    voice_tts_attached = True
+                    voice_tts_stage_run_id = str(payload.get("stage_run_id", ""))
                 else:
                     visual_attached = True
                     visual_stage_run_id = str(payload.get("stage_run_id", ""))
@@ -444,6 +460,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 voice_outcome = "completed"
             elif payload.get("stage") == "voice_director":
                 voice_director_outcome = "completed"
+            elif payload.get("stage") == "voice_tts":
+                voice_tts_outcome = "completed"
             else:
                 visual_outcome = "completed"
             status = (
@@ -463,6 +481,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 voice_outcome = "needs_review"
             elif payload.get("stage") == "voice_director":
                 voice_director_outcome = "needs_review"
+            elif payload.get("stage") == "voice_tts":
+                voice_tts_outcome = "needs_review"
             else:
                 visual_outcome = "needs_review"
             status = ProductionStatus.NEEDS_REVIEW.value
@@ -477,6 +497,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 voice_outcome = "failed"
             elif payload.get("stage") == "voice_director":
                 voice_director_outcome = "failed"
+            elif payload.get("stage") == "voice_tts":
+                voice_tts_outcome = "failed"
             else:
                 visual_outcome = "failed"
             status = ProductionStatus.FAILED.value
