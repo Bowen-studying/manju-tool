@@ -4,5 +4,6 @@ from manju.production.adapters.base import StageResult
 from manju.production.adapters.storyboard import StoryboardStageAdapter
 from manju.production.adapters.visual import VisualStageAdapter
 from manju.production.adapters.voice_script import VoiceScriptStageAdapter
+from manju.production.adapters.voice_director import VoiceDirectorStageAdapter
 
-__all__ = ["StageResult", "StoryboardStageAdapter", "VisualStageAdapter", "VoiceScriptStageAdapter"]
+__all__ = ["StageResult", "StoryboardStageAdapter", "VisualStageAdapter", "VoiceScriptStageAdapter", "VoiceDirectorStageAdapter"]

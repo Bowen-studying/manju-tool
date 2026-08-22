@@ -16,3 +16,4 @@ class StageResult:
     authority_path: str = ""
     authority_hash: str = ""
     authority_files: tuple[dict[str, str], ...] = field(default_factory=tuple)
+    metadata: dict[str, Any] = field(default_factory=dict)

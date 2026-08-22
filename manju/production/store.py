@@ -48,6 +48,7 @@ class ProjectStore:
         storyboard = production.get("storyboard") if isinstance(production, dict) else None
         visual = production.get("visual") if isinstance(production, dict) else None
         voice_script = production.get("voice_script", {"enabled": False}) if isinstance(production, dict) else None
+        voice_director = production.get("voice_director", {"enabled": False}) if isinstance(production, dict) else None
         if not isinstance(source, dict) or source.get("type") not in {"novel", "script", "storyboard"}:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "source.type 不受支持")
         if not isinstance(source.get("path"), str) or not isinstance(source.get("sha256"), str):
@@ -65,6 +66,20 @@ class ProjectStore:
             or voice_script.get("schema_version") != "voice-script-v1"
         ):
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_script binding is invalid")
+        if not isinstance(voice_director, dict) or not isinstance(voice_director.get("enabled"), bool):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_director contract is invalid")
+        if voice_director.get("enabled") and (
+            not voice_script.get("enabled")
+            or voice_director.get("mode") != "offline_langgraph_mock"
+            or voice_director.get("schema_version") != "voice-direction-v1"
+            or voice_director.get("policy_version") != "voice-director-policy-v1"
+            or voice_director.get("model_profile") != "deterministic-mock"
+            or not isinstance(voice_director.get("max_model_calls"), int)
+            or voice_director.get("max_model_calls") < 1
+            or not isinstance(voice_director.get("max_steps"), int)
+            or voice_director.get("max_steps") < 4
+        ):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_director binding is invalid")
         if visual.get("enabled"):
             engine = visual.get("engine")
             profile = visual.get("provider_profile")

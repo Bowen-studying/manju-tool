@@ -69,6 +69,13 @@ class ProjectPaths:
     def voice_script_dir(self, run_id: str, stage_run_id: str) -> str:
         return os.path.join(self.run_dir(run_id), "stages", "voice_script", stage_run_id)
 
+    def voice_director_dir(self, run_id: str, stage_run_id: str) -> str:
+        return os.path.join(self.run_dir(run_id), "stages", "voice_director", stage_run_id)
+
+    @property
+    def voice_director_policy_path(self) -> str:
+        return os.path.join(self.production_dir, "policies", "voice_director_policy.json")
+
     @property
     def manual_dispatches_dir(self) -> str:
         return os.path.join(self.production_dir, "manual", "dispatches")

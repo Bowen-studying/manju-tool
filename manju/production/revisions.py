@@ -41,7 +41,9 @@ def _plan(
         # meaning as a safe fallback until all stage outputs are registered.
         root_change = (stage == "storyboard" and "source.script" in changed_ids) or (
             stage == "visual" and bool({"source.script", "style.reference"} & changed_ids)
-        ) or (stage == "voice_script" and "source.script" in changed_ids)
+        ) or (stage == "voice_script" and "source.script" in changed_ids) or (
+            stage == "voice_director" and bool({"source.script", "voice_director.policy"} & changed_ids)
+        )
         action = "regenerate" if set(stage_refs) & set(affected) or root_change else "reuse"
         result.append({"stage": stage, "action": action,
                        "artifact_versions": [item.to_dict() for item in stage_refs if item not in affected]})
