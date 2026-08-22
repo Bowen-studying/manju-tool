@@ -85,12 +85,19 @@ class ProjectStore:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts contract is invalid")
         if voice_tts.get("enabled") and (
             not voice_director.get("enabled")
-            or voice_tts.get("mode") != "offline_mock"
+            or voice_tts.get("mode") not in {"offline_mock", "paid_siliconflow"}
             or voice_tts.get("schema_version") != "voice-audio-v1"
             or not isinstance(voice_tts.get("model_profile"), str)
             or not voice_tts.get("model_profile")
         ):
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts binding is invalid")
+        if voice_tts.get("enabled") and voice_tts.get("mode") == "paid_siliconflow":
+            if not isinstance(voice_tts.get("maximum_amount"), str) or not voice_tts["maximum_amount"].isdigit():
+                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts budget is invalid")
+            if not isinstance(voice_tts.get("provider_profile"), str) or not voice_tts["provider_profile"]:
+                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts provider profile is invalid")
+            if voice_tts.get("provider_request") is not None and not isinstance(voice_tts.get("provider_request"), dict):
+                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts provider request is invalid")
         if visual.get("enabled"):
             engine = visual.get("engine")
             profile = visual.get("provider_profile")

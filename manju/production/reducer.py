@@ -534,19 +534,31 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             pending_request = request
             stage = request.stage
             status = ProductionStatus.AWAITING_APPROVAL.value
-            reason_code = ReasonCode.PAID_VISUAL_BATCH_APPROVAL_REQUIRED.value
+            reason_code = (
+                ReasonCode.PAID_VOICE_TTS_APPROVAL_REQUIRED.value
+                if request.stage == "voice_tts"
+                else ReasonCode.PAID_VISUAL_BATCH_APPROVAL_REQUIRED.value
+            )
             next_actions = (
                 {"action": "approve", "request_id": request.request_id},
                 {"action": "reject", "request_id": request.request_id},
             )
         elif event_type == "approval_approved":
             approval_decision = "approved"
-            reason_code = ReasonCode.PAID_VISUAL_BATCH_APPROVAL_REQUIRED.value
+            reason_code = (
+                ReasonCode.PAID_VOICE_TTS_APPROVAL_REQUIRED.value
+                if (pending_request or ApprovalRequest).stage == "voice_tts"
+                else ReasonCode.PAID_VISUAL_BATCH_APPROVAL_REQUIRED.value
+            )
             next_actions = ({"action": "issue_grant", "request_id": pending_approval_id},)
         elif event_type == "approval_rejected":
             approval_decision = "rejected"
             status = ProductionStatus.NEEDS_REVIEW.value
-            reason_code = ReasonCode.PAID_VISUAL_BATCH_REJECTED.value
+            reason_code = (
+                ReasonCode.PAID_VOICE_TTS_REJECTED.value
+                if (pending_request or ApprovalRequest).stage == "voice_tts"
+                else ReasonCode.PAID_VISUAL_BATCH_REJECTED.value
+            )
             next_actions = ()
         elif event_type == "grant_issued":
             active_grant = Grant.from_dict(payload["grant"])
@@ -557,7 +569,11 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type == "grant_revoked":
             active_grant_id = ""
             status = ProductionStatus.NEEDS_REVIEW.value
-            reason_code = ReasonCode.PAID_VISUAL_BATCH_REJECTED.value
+            reason_code = (
+                ReasonCode.PAID_VOICE_TTS_REJECTED.value
+                if (pending_request or ApprovalRequest).stage == "voice_tts"
+                else ReasonCode.PAID_VISUAL_BATCH_REJECTED.value
+            )
             next_actions = ()
         elif event_type == "manual_dispatch_prepared":
             dispatch = payload["dispatch"]

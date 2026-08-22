@@ -55,6 +55,7 @@ from manju.production.models import (
 from manju.production.paths import ProjectPaths
 from manju.production.scheduler import ProductionScheduler
 from manju.production.store import ProjectStore, sha256_file
+from manju.production.tts_providers import TTS_CURRENCY
 from manju.utils.ai import get_ai_config
 from manju.utils.runtime import atomic_write_json, read_json, safe_filename
 from manju.utils.runtime import atomic_write_bytes
@@ -90,6 +91,10 @@ def initialize_project(
     voice_director_max_steps: int = 8,
     voice_tts_enabled: bool = False,
     voice_tts_model_profile: str = "deterministic-fake-tts-v1",
+    voice_tts_mode: str = "offline_mock",
+    voice_tts_maximum_amount: str = "1000",
+    voice_tts_provider_profile: str = "siliconflow-cosyvoice2",
+    voice_tts_provider_request: dict[str, Any] | None = None,
 ) -> ProductionSnapshot:
     source = os.path.abspath(source)
     if source_type not in {"novel", "script", "storyboard"}:
@@ -104,6 +109,13 @@ def initialize_project(
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-tts requires voice-director")
     if voice_tts_enabled and (not isinstance(voice_tts_model_profile, str) or not voice_tts_model_profile.strip()):
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-tts model profile is invalid")
+    if voice_tts_enabled and voice_tts_mode not in {"offline_mock", "paid_siliconflow"}:
+        raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-tts mode is invalid")
+    if voice_tts_enabled and voice_tts_mode == "paid_siliconflow":
+        if not str(voice_tts_maximum_amount).isdigit() or not voice_tts_provider_profile.strip():
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-tts paid budget or provider profile is invalid")
+        if voice_tts_provider_request is not None and not isinstance(voice_tts_provider_request, dict):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "voice-tts provider request is invalid")
     if visual_enabled and (visual_maximum_paid_calls < 1 or not str(visual_maximum_amount).isdigit()):
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "visual mock 预算无效")
     if visual_enabled and (not isinstance(visual_provider_profile, str) or not visual_provider_profile or not isinstance(visual_operation_kind, str) or not visual_operation_kind or not isinstance(visual_provider_request, (dict, type(None)))):
@@ -182,9 +194,12 @@ def initialize_project(
             },
             "voice_tts": {
                 "enabled": voice_tts_enabled,
-                "mode": "offline_mock" if voice_tts_enabled else "",
+                "mode": voice_tts_mode if voice_tts_enabled else "",
                 "schema_version": "voice-audio-v1" if voice_tts_enabled else "",
                 "model_profile": voice_tts_model_profile if voice_tts_enabled else "",
+                "maximum_amount": voice_tts_maximum_amount if voice_tts_enabled and voice_tts_mode == "paid_siliconflow" else "",
+                "provider_profile": voice_tts_provider_profile if voice_tts_enabled and voice_tts_mode == "paid_siliconflow" else "",
+                "provider_request": voice_tts_provider_request if voice_tts_enabled and voice_tts_mode == "paid_siliconflow" else None,
             },
             "voice": {"enabled": False},
             "video": {"enabled": False},
@@ -972,7 +987,11 @@ class ProductionService:
             approval_event = next((event for event in events if event.get("run_id") == snapshot.run_id and event.get("event_type") == "approval_requested"), None)
             grant_event = next((event for event in events if event.get("run_id") == snapshot.run_id and event.get("event_type") == "grant_issued"), None)
             if approval_event is not None or grant_event is not None:
-                grant = self._active_visual_grant(events, project, snapshot.run_id)
+                grant_stage = str(((grant_event or {}).get("payload") or {}).get("grant", {}).get("stage", ""))
+                if grant_stage == "voice_tts":
+                    grant = self._active_voice_tts_grant(events, project, snapshot.run_id)
+                else:
+                    grant = self._active_visual_grant(events, project, snapshot.run_id)
                 if grant.settlement_mode != "provider_evidence":
                     raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "contractual tariff grants require the dedicated settlement command")
             previous = None
@@ -1252,11 +1271,16 @@ class ProductionService:
                     ReasonCode.PROJECT_CONTRACT_CHANGED.value,
                     "voice-tts model profile does not match the configured project profile",
                 )
-            if not getattr(self.voice_tts_adapter.model_port, "idempotency_supported", False):
+            if voice_tts.get("mode", "offline_mock") == "offline_mock" and not getattr(
+                self.voice_tts_adapter.model_port, "idempotency_supported", False
+            ):
                 raise ProductionError(
                     ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value,
                     "voice-tts model must support idempotent calls",
                 )
+            # Paid synchronous providers (mode=paid_siliconflow) may omit
+            # idempotency: crash recovery fails closed through the durable
+            # call-receipt state machine and never blindly re-submits.
         runtime_inputs = self._runtime_inputs(project, run_id, successor_selection)
         source_input = runtime_inputs["source.script"]
         if voice_tts.get("enabled"):
@@ -2149,6 +2173,207 @@ class ProductionService:
                 )
             return self._snapshot_and_project()
 
+    def _advance_voice_tts_paid_action(
+        self, *, project: dict[str, Any], snapshot: ProductionSnapshot, contract: dict[str, Any]
+    ) -> ProductionSnapshot:
+        """Paid voice-tts: approval -> grant -> reserve -> submit -> settle -> publish.
+
+        Provider side effects happen only after a signed grant exists.  A
+        synchronous TTS transport failure is settled as failed (HTTP rejected)
+        or outcome_unknown (transport broke; never blindly re-submit).
+        """
+        run_id = snapshot.run_id
+        stage_run_id = f"voice-tts-{run_id.removeprefix('run_')}"
+        output_dir = self.paths.voice_tts_dir(run_id, stage_run_id)
+        with ProjectLock(self.paths.lock_file):
+            project = self.store.load_project()
+            events = self.store.events.read()
+            snapshot = self.store.snapshot()
+            contract = self.store.validate_contract(project, run_id)
+            self._validate_runtime_contract(contract)
+            if not has_event(events, run_id, "stage_scheduled", "voice_tts"):
+                self.store.events.append(
+                    "stage_scheduled", project_id=project["project_id"], run_id=run_id,
+                    payload={"stage": "voice_tts", "stage_invocation_id": stage_run_id},
+                )
+            if not has_event(events, run_id, "stage_run_attached", "voice_tts"):
+                self.store.events.append(
+                    "stage_run_attached", project_id=project["project_id"], run_id=run_id,
+                    payload={"stage": "voice_tts", "stage_run_id": stage_run_id},
+                )
+            events = self.store.events.read()
+            director_event = next(
+                (event for event in reversed(events) if event.get("run_id") == run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "voice_director"), None,
+            )
+            director_payload = (director_event or {}).get("payload") or {}
+            direction_public = director_payload.get("artifacts") or []
+            direction_graph = director_payload.get("produced_artifacts") or director_payload.get("reused_artifacts") or []
+            if len(direction_public) != 1 or len(direction_graph) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-tts requires voice-direction input")
+            direction_ref = ArtifactRef.from_dict(direction_graph[0]).to_dict()
+            direction_path = self._stage_private_artifact(
+                path=str(direction_public[0].get("path", "")), version_id=direction_ref["version_id"],
+                logical_id="voice_direction.main", output_dir=output_dir,
+            )
+            key_id = str(project.get("integrity", {}).get("hmac_key_id", ""))
+            approval_event = next(
+                (event for event in events if event.get("run_id") == run_id and event.get("event_type") == "approval_requested"), None,
+            )
+            if approval_event is None:
+                request = self.voice_tts_adapter.plan(
+                    project_id=project["project_id"], run_id=run_id, stage_run_id=stage_run_id,
+                    output_dir=output_dir, voice_direction_path=direction_path,
+                    voice_direction_ref=direction_ref,
+                    settings=project["production"]["voice_tts"],
+                )
+                self.store.events.append("approval_requested", project_id=project["project_id"], run_id=run_id,
+                                         payload={"approval_request": request.to_dict(), "key_id": key_id})
+                return self._snapshot_and_project()
+            grant_event = next(
+                (event for event in events if event.get("run_id") == run_id and event.get("event_type") == "grant_issued"), None,
+            )
+            if grant_event is None:
+                return self._snapshot_and_project()
+            operation_events = [event for event in events if event.get("run_id") == run_id and event.get("event_type") in {"call_reserved", "call_submitted", "call_settled", "call_reconciled"}]
+            latest_operation = None
+            if operation_events:
+                latest_operation = OperationRecord.from_dict((operation_events[-1].get("payload") or {}).get("operation", {}))
+            if latest_operation is None:
+                grant = self._active_voice_tts_grant(events, project, run_id)
+                binding = grant.operation_bindings[0]
+                bound_request = binding.get("provider_request")
+                operation = OperationRecord(
+                    binding["operation_id"], grant.grant_id, binding["kind"], binding["input_fingerprint"],
+                    grant.provider_profile, reservation_amount=grant.maximum_amount, currency=grant.currency,
+                    provider_request=dict(bound_request) if isinstance(bound_request, dict) else None,
+                )
+                self.store.events.append("call_reserved", project_id=project["project_id"], run_id=run_id,
+                                         payload={"operation": operation.to_dict(), "key_id": key_id})
+                return self._snapshot_and_project()
+            if latest_operation.status == "reserved":
+                self._active_voice_tts_grant(events, project, run_id)
+                try:
+                    provider_job_id = self.voice_tts_adapter.submit_operation(
+                        operation=latest_operation.to_dict(), stage_run_id=stage_run_id, output_dir=output_dir,
+                        voice_direction_path=direction_path, voice_direction_ref=direction_ref,
+                    )
+                    operation = latest_operation.submit(provider_job_id)
+                    self.store.events.append("call_submitted", project_id=project["project_id"], run_id=run_id,
+                                             payload={"operation": operation.to_dict(), "key_id": key_id})
+                except ProductionError as exc:
+                    if exc.code == ReasonCode.OPERATION_OUTCOME_UNKNOWN.value:
+                        operation = latest_operation.submit(str(latest_operation.operation_id))
+                        self.store.events.append("call_submitted", project_id=project["project_id"], run_id=run_id,
+                                                 payload={"operation": operation.to_dict(), "key_id": key_id})
+                        unknown = operation.settle(
+                            outcome="outcome_unknown", result_fingerprint="",
+                            usage={"cost_status": "unknown", "cost_source": "unknown"},
+                        )
+                        self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                                 payload={"operation": unknown.to_dict(), "key_id": key_id})
+                        return self._snapshot_and_project()
+                    failed = latest_operation.submit(str(latest_operation.operation_id))
+                    self.store.events.append("call_submitted", project_id=project["project_id"], run_id=run_id,
+                                             payload={"operation": failed.to_dict(), "key_id": key_id})
+                    settled = failed.settle(
+                        outcome="failed", result_fingerprint="",
+                        usage={"actual_amount": "0", "currency": TTS_CURRENCY,
+                               "cost_status": "final", "cost_source": "provider_response"},
+                    )
+                    self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                             payload={"operation": settled.to_dict(), "key_id": key_id})
+                    return self._snapshot_and_project()
+                return self._snapshot_and_project()
+            if latest_operation.status == "submitted":
+                self._active_voice_tts_grant(events, project, run_id)
+                try:
+                    observed = self.voice_tts_adapter.observe_operation(
+                        stage_run_id=stage_run_id, output_dir=output_dir,
+                        operation=latest_operation.to_dict(),
+                        voice_direction_path=direction_path, voice_direction_ref=direction_ref,
+                    )
+                except ProductionError as exc:
+                    if exc.code == ReasonCode.OPERATION_OUTCOME_UNKNOWN.value:
+                        operation = latest_operation.settle(
+                            outcome="outcome_unknown", result_fingerprint="",
+                            usage={"cost_status": "unknown", "cost_source": "unknown"},
+                        )
+                        self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                                 payload={"operation": operation.to_dict(), "key_id": key_id})
+                        return self._snapshot_and_project()
+                    raise
+                operation = latest_operation.settle(
+                    outcome=observed.outcome,
+                    result_fingerprint=observed.result_fingerprint,
+                    usage=observed.settled_usage,
+                )
+                self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                         payload={"operation": operation.to_dict(), "key_id": key_id})
+                return self._snapshot_and_project()
+            if latest_operation.status == "settled" and latest_operation.outcome == "succeeded":
+                result = self.voice_tts_adapter.publish_result(
+                    stage_run_id=stage_run_id, output_dir=output_dir,
+                    operation=latest_operation.to_dict(),
+                    voice_direction_path=direction_path, voice_direction_ref=direction_ref,
+                )
+                if result.status != "completed":
+                    self.store.events.append(
+                        "stage_failed", project_id=project["project_id"], run_id=run_id,
+                        payload={"stage": "voice_tts", "stage_run_id": stage_run_id,
+                                 "reason_code": result.reason_code or ReasonCode.VOICE_TTS_FAILED.value,
+                                 "message": "voice-tts paid publish failed"},
+                    )
+                    return self._snapshot_and_project()
+                published_artifacts = [{**item, "path": self._relative_artifact_path(str(item.get("path", "")))} for item in result.artifacts]
+                self.store.events.append("stage_completed", project_id=project["project_id"], run_id=run_id,
+                                         payload={"stage": "voice_tts", "stage_run_id": stage_run_id,
+                                                  "authority_path": self._relative_artifact_path(result.authority_path), "authority_hash": result.authority_hash,
+                                                  "authority_files": [{"path": self._relative_artifact_path(item["path"]), "sha256": item["sha256"]} for item in result.authority_files],
+                                                  "artifacts": published_artifacts,
+                                                  "produced_artifacts": self._produced_artifacts(
+                                                      stage="voice_tts", run_id=run_id, contract=contract,
+                                                      artifacts=published_artifacts, events=events,
+                                                  )})
+                return self._snapshot_and_project()
+            if latest_operation.status == "settled" and latest_operation.outcome == "failed":
+                self.store.events.append("stage_failed", project_id=project["project_id"], run_id=run_id,
+                                         payload={"stage": "voice_tts", "stage_run_id": stage_run_id,
+                                                  "reason_code": ReasonCode.VOICE_TTS_FAILED.value,
+                                                  "message": "voice-tts paid provider reported failure"})
+                return self._snapshot_and_project()
+            return self._snapshot_and_project()
+
+    def _active_voice_tts_grant(self, events: list[dict[str, Any]], project: dict[str, Any], run_id: str) -> Grant:
+        """Validate the still-active signed grant immediately before paid effects."""
+        approval_event = next(
+            (event for event in events if event.get("run_id") == run_id and event.get("event_type") == "approval_requested"),
+            None,
+        )
+        grant_event = next(
+            (event for event in events if event.get("run_id") == run_id and event.get("event_type") == "grant_issued"),
+            None,
+        )
+        if approval_event is None or grant_event is None:
+            raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "voice-tts grant authority is missing")
+        request = ApprovalRequest.from_dict((approval_event.get("payload") or {}).get("approval_request", {}))
+        grant = Grant.from_dict((grant_event.get("payload") or {}).get("grant", {}))
+        if any(
+            event.get("run_id") == run_id
+            and event.get("event_type") == "grant_revoked"
+            and (event.get("payload") or {}).get("grant_id") == grant.grant_id
+            for event in events
+        ):
+            raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "grant has been revoked")
+        key = self.store.events.key_provider.get_key(grant.key_id) if self.store.events.key_provider else None
+        if not key:
+            raise ProductionError(ReasonCode.HMAC_KEY_UNAVAILABLE.value)
+        grant.validate_against(request, key=key, now=utc_now())
+        if grant.project_id != project["project_id"] or grant.run_id != run_id or grant.stage != "voice_tts":
+            raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "grant does not bind active voice-tts run")
+        return grant
+
     def advance(self) -> ProductionSnapshot:
         with ProjectLock(
             self.paths.execution_lock_file,
@@ -2166,6 +2391,11 @@ class ProductionService:
                         project=probe_project, snapshot=probe_snapshot, contract=probe_contract,
                     )
                 if probe_action == "advance_voice_tts" and self._stage_execution_action(probe_contract, "voice_tts") != "reuse":
+                    voice_tts_mode = probe_project.get("production", {}).get("voice_tts", {}).get("mode", "offline_mock")
+                    if voice_tts_mode == "paid_siliconflow":
+                        return self._advance_voice_tts_paid_action(
+                            project=probe_project, snapshot=probe_snapshot, contract=probe_contract,
+                        )
                     return self._advance_voice_tts_action(
                         project=probe_project, snapshot=probe_snapshot, contract=probe_contract,
                     )

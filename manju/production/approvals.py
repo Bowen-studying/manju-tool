@@ -12,7 +12,9 @@ from manju.production.events import sign_payload
 from manju.production.models import M2_CONTRACT_VERSION, ProductionError, ReasonCode, fingerprint
 
 
-_PUBLIC_PROVIDER_REQUEST_FIELDS = frozenset({"prompt", "model", "size", "quality", "n", "response_format"})
+_PUBLIC_PROVIDER_REQUEST_FIELDS = frozenset(
+    {"prompt", "model", "size", "quality", "n", "response_format", "voice", "sample_rate"}
+)
 
 
 def _provider_request_binding(intent: dict[str, Any], code: ReasonCode) -> dict[str, Any]:
@@ -134,8 +136,11 @@ class ApprovalRequest:
         code = ReasonCode.APPROVAL_CONTRACT_INVALID
         for name in ("request_id", "project_id", "run_id", "stage", "stage_run_id", "kind", "state_fingerprint", "provider_profile"):
             _require(getattr(self, name), name, code)
-        if self.stage != "visual" or self.kind != "paid_visual_batch":
-            raise ProductionError(code.value, "M2 only permits visual paid-batch approvals")
+        if (self.stage, self.kind) not in {
+            ("visual", "paid_visual_batch"),
+            ("voice_tts", "paid_voice_tts_batch"),
+        }:
+            raise ProductionError(code.value, "M2 only permits visual or voice-tts paid-batch approvals")
         if not self.artifact_versions or not all(
             isinstance(item, dict) and _require(item.get("artifact_id"), "artifact_id", code)
             and _require(item.get("version_id"), "version_id", code)
