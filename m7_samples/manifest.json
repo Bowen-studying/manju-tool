@@ -1,0 +1,298 @@
+{
+  "schema_version": "m7-samples-v1",
+  "generated_at": "2026-08-23T00:00:00Z",
+  "count": 20,
+  "samples": [
+    {
+      "id": "s01-short-dialogue",
+      "kind": "script",
+      "filename": "s01_short_dialogue.txt",
+      "source_sha256": "a04def2bb313b6df9bad307b0cfd9db3261842c2e3356c8a6ca558025d95effc",
+      "bytes": 166,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "s02-monologue",
+      "kind": "script",
+      "filename": "s02_monologue.txt",
+      "source_sha256": "a7529cb067d89de9ae8e88e8bfcc59b8411800ea67f4efda46529c14e425575e",
+      "bytes": 193,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "s03-silent-action",
+      "kind": "script",
+      "filename": "s03_silent_action.txt",
+      "source_sha256": "f705fde98fde028e07c9b4f592e861ecb0c28a181b633ad76ea99166870ff0f1",
+      "bytes": 202,
+      "expected_stage": "visual",
+      "enabled_config": {
+        "visual": true
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "s04-special-chars",
+      "kind": "script",
+      "filename": "s04_special_chars.txt",
+      "source_sha256": "130cf11fd51d0ec0140199137c1c69acbab5c03a22da14f44fce8a153b5e2945",
+      "bytes": 238,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "s05-single-shot",
+      "kind": "script",
+      "filename": "s05_single_shot.txt",
+      "source_sha256": "e05d8ff85a3fa8349675ec601cecf6856ba3a8238a5a149dae97e31383c481b1",
+      "bytes": 92,
+      "expected_stage": "visual",
+      "enabled_config": {
+        "visual": true
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "n01-short-novel",
+      "kind": "novel",
+      "filename": "n01_short_novel.txt",
+      "source_sha256": "496dd14ba21fc26b06e559acbaa31be8805e4b96203a45b54d5b42eff6a174be",
+      "bytes": 242,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "n02-long-novel",
+      "kind": "novel",
+      "filename": "n02_long_novel.txt",
+      "source_sha256": "e74d46945813f972473ce167f3d22b20217c9e4523452e34d0f2cf63ef30cc3c",
+      "bytes": 14852,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "n03-dialogue-novel",
+      "kind": "novel",
+      "filename": "n03_dialogue_novel.txt",
+      "source_sha256": "f894ef9b75ae367fb5a5458b307989c745669a71e8792fd56ae755461d577b8a",
+      "bytes": 213,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "n04-scenery-novel",
+      "kind": "novel",
+      "filename": "n04_scenery_novel.txt",
+      "source_sha256": "5cab63715b5a8e19fe98d900fcc035a47f0b1b4d602d26a47f9c0ed69a653560",
+      "bytes": 255,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "n05-formatted-novel",
+      "kind": "novel",
+      "filename": "n05_formatted_novel.txt",
+      "source_sha256": "b6fafa64dd9b5a7c489d6db756cd60e47441b0042da2000e79b7d621f41b9249",
+      "bytes": 280,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "c01-legacy-v2",
+      "kind": "legacy_storyboard",
+      "filename": "c01_legacy_v2.json",
+      "source_sha256": "97bc8f0e566807d92c359a672186aa9c0b1740e38697e240e9d639c0e0773611",
+      "bytes": 1017,
+      "expected_stage": "video_prompt+visual",
+      "enabled_config": {
+        "video_prompt": true,
+        "visual": true
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "c02-legacy-v1",
+      "kind": "legacy_storyboard",
+      "filename": "c02_legacy_v1.json",
+      "source_sha256": "4e4b8de19a8c93d12e09c03bd8d10ae009e36cb432a4ef35d4b9d3b6088c3112",
+      "bytes": 490,
+      "expected_stage": "video_prompt+visual",
+      "enabled_config": {
+        "video_prompt": true,
+        "visual": true
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "c03-legacy-mixed",
+      "kind": "legacy_storyboard",
+      "filename": "c03_legacy_mixed.json",
+      "source_sha256": "630f981a4b3725da75204558fc73189cb34d338382a8e356223919c9352d8341",
+      "bytes": 830,
+      "expected_stage": "video_prompt+visual",
+      "enabled_config": {
+        "video_prompt": true,
+        "visual": true
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "c04-legacy-long",
+      "kind": "legacy_storyboard",
+      "filename": "c04_legacy_long.json",
+      "source_sha256": "eb1b12c4f02c712f264a4fd3c92dc848e62f0a475d9e469c62953a61b4d46071",
+      "bytes": 12142,
+      "expected_stage": "video_prompt+visual",
+      "enabled_config": {
+        "video_prompt": true,
+        "visual": true
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "c05-legacy-silent",
+      "kind": "legacy_storyboard",
+      "filename": "c05_legacy_silent.json",
+      "source_sha256": "c377ebadb44f95c264fb980906439f88d3c7446221b918f8e6d2f52d69121ba1",
+      "bytes": 859,
+      "expected_stage": "video_prompt+visual",
+      "enabled_config": {
+        "video_prompt": true,
+        "visual": true
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "x01-duplicate-name",
+      "kind": "script",
+      "filename": "x01_duplicate_name.txt",
+      "source_sha256": "721a5fe215a27bf952fcb0bfc4d9feb36d6dd222779dea2d8483ee1a3db9a436",
+      "bytes": 144,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "x02-multi-scene",
+      "kind": "script",
+      "filename": "x02_multi_scene.txt",
+      "source_sha256": "12a327b50bc5c706d8b9a9f1364b7e3b23dcc09483a947779ef9ca140036432c",
+      "bytes": 474,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "x03-mixed-cues",
+      "kind": "script",
+      "filename": "x03_mixed_cues.txt",
+      "source_sha256": "71f72e8078a01c3ed0f04335e6b845698bdf53e0da79afdbb316321ee9b9225c",
+      "bytes": 142,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "x04-punctuation-storm",
+      "kind": "script",
+      "filename": "x04_punctuation_storm.txt",
+      "source_sha256": "b71d5271ed2e9f36c85b4c21a01f283463ee384488839fe7a6875b6d510351d2",
+      "bytes": 185,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    },
+    {
+      "id": "x05-eight-roles",
+      "kind": "script",
+      "filename": "x05_eight_roles.txt",
+      "source_sha256": "a467e927fc37e5d27da4ec61ddc2cd34aea18dc6ddcc7a808826ada8824823c8",
+      "bytes": 279,
+      "expected_stage": "voice_tts+visual",
+      "enabled_config": {
+        "voice_script": true,
+        "voice_director": true,
+        "voice_tts": "offline_mock"
+      },
+      "budget_ceiling_minor": 1000,
+      "allowed_manual_gates": []
+    }
+  ]
+}

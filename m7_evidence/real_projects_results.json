@@ -1,0 +1,20 @@
+{
+  "agencies_present": {
+    "siliconflow": false,
+    "agnes": true
+  },
+  "results": {
+    "r03": {
+      "status": "completed",
+      "job_id_prefix": "",
+      "submitted_count": 1,
+      "mp4_published": true,
+      "terminal_reason": null,
+      "ledger": {
+        "call_reserved": 1,
+        "call_submitted": 1,
+        "call_settled": 1
+      }
+    }
+  }
+}

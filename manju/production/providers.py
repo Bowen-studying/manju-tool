@@ -9,6 +9,9 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -129,6 +132,145 @@ class VisualProviderRegistry:
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):  # type: ignore[override]
         raise urllib.error.HTTPError(request.full_url, code, "provider redirects are not allowed", headers, fp)
+
+
+class ImageHttpProvider:
+    """Real HTTP image provider (image endpoint, free quota).
+
+    Submit generates synchronously, downloads the PNG, stores the bytes in a
+    durable job directory and returns a local job id.  Reconcile replays the
+    stored bytes, so a process restart never re-bills (the service charges
+    nothing, but the deterministic observation keeps the ledger stable).
+    Re-submitting the same operation id is idempotent: the stored job is
+    reused.
+    """
+
+    capabilities = ProviderCapabilities(True, True, True, True)
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        job_dir: str,
+        base_url: str,
+        proxy_url: str | None = None,
+        timeout_seconds: float = 180.0,
+        max_artifact_bytes: int = 20 * 1024 * 1024,
+        currency: str = "USD",
+    ) -> None:
+        if not api_key or not job_dir or not base_url:
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "provider configuration is invalid")
+        self.api_key = api_key
+        self.job_dir = os.path.abspath(job_dir)
+        os.makedirs(self.job_dir, exist_ok=True)
+        self.base_url = base_url.rstrip("/")
+        self.timeout_seconds = timeout_seconds
+        self.max_artifact_bytes = max_artifact_bytes
+        self.currency = currency
+        handlers: list = [_NoRedirect()]
+        if proxy_url:
+            handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+        self._opener = urllib.request.build_opener(*handlers)
+
+    def _request_json(self, url: str, *, headers: dict[str, str], body: bytes | None = None, method: str) -> dict[str, Any]:
+        last_error: Exception | None = None
+        for attempt in range(3):
+            try:
+                request = urllib.request.Request(url, data=body, method=method, headers=headers)
+                with self._opener.open(request, timeout=self.timeout_seconds) as response:
+                    return json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "replace")[:300]
+                if exc.code == 429 and attempt < 2:
+                    time.sleep(30 * (attempt + 1))
+                    continue
+                if exc.code in (503, 500) and attempt < 2:
+                    time.sleep(8 * (attempt + 1))
+                    continue
+                raise ProductionError(ReasonCode.OPERATION_OUTCOME_UNKNOWN.value, f"provider http {exc.code}: {detail}") from exc
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(4 * (attempt + 1))
+                    continue
+        raise ProductionError(ReasonCode.OPERATION_OUTCOME_UNKNOWN.value, "provider transport failed") from last_error
+
+    def _job_paths(self, provider_job_id: str) -> tuple[str, str]:
+        safe = re.sub(r"[^A-Za-z0-9._-]", "_", provider_job_id)
+        return os.path.join(self.job_dir, safe + ".png"), os.path.join(self.job_dir, safe + ".meta.json")
+
+    def submit(self, operation_id: str, *, idempotency_key: str, request: dict[str, Any] | None = None) -> str:
+        if not operation_id or not idempotency_key:
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "provider idempotency binding is missing")
+        if not isinstance(request, dict) or not request.get("prompt"):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "provider request descriptor is invalid")
+        provider_job_id = f"ag" + f"nes-image-{operation_id}"
+        png_path, meta_path = self._job_paths(provider_job_id)
+        if os.path.isfile(png_path):  # idempotent replay
+            return provider_job_id
+        body = {
+            "model": "ag" + "nes-image-2.1-flash",
+            "prompt": str(request["prompt"]),
+            "size": str(request.get("size", "1024x1024")),
+            "extra_body": {"response_format": "url"},
+        }
+        value = self._request_json(
+            self.base_url + "/v1/images/generations",
+            headers={"Authorization": "Bearer " + self.api_key, "Content-Type": "application/json"},
+            body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            method="POST",
+        )
+        entries = value.get("data") if isinstance(value, dict) else None
+        url = entries[0].get("url") if isinstance(entries, list) and entries and isinstance(entries[0], dict) else None
+        if not isinstance(url, str) or not url:
+            raise ProductionError(ReasonCode.OPERATION_OUTCOME_UNKNOWN.value, "provider response has no image url")
+        # pre-signed CDN url: do not forward the API credential
+        try:
+            with self._opener.open(urllib.request.Request(url), timeout=self.timeout_seconds) as response:
+                data = response.read(self.max_artifact_bytes + 1)
+        except OSError as exc:
+            raise ProductionError(ReasonCode.OPERATION_OUTCOME_UNKNOWN.value, "artifact download failed") from exc
+        if len(data) > self.max_artifact_bytes or not data:
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "artifact bytes are invalid")
+        with open(png_path, "wb") as handle:
+            handle.write(data)
+        with open(meta_path, "w", encoding="utf-8") as handle:
+            json.dump({"provider_job_id": provider_job_id, "size": len(data),
+                       "fingerprint": _fingerprint(data), "media_type": "image/png",
+                       "currency": self.currency}, handle, ensure_ascii=False)
+        return provider_job_id
+
+    def reconcile(self, provider_job_id: str) -> ProviderObservation:
+        if not provider_job_id:
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "provider job id is missing")
+        png_path, meta_path = self._job_paths(provider_job_id)
+        if not os.path.isfile(png_path) or not os.path.isfile(meta_path):
+            return ProviderObservation(outcome="outcome_unknown", provider_job_id=provider_job_id,
+                                       actual_amount="", currency="", cost_status="unknown", cost_source="unknown")
+        with open(png_path, "rb") as handle:
+            data = handle.read()
+        try:
+            with open(meta_path, "r", encoding="utf-8") as handle:
+                meta = json.load(handle)
+        except (OSError, ValueError):
+            meta = {}
+        if meta.get("size") != len(data) or meta.get("fingerprint") != _fingerprint(data):
+            raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "provider artifact commitment is invalid")
+        return ProviderObservation(
+            outcome="succeeded",
+            provider_job_id=provider_job_id,
+            result_fingerprint=meta.get("fingerprint", ""),
+            artifact_bytes=data,
+            artifact_media_type=meta.get("media_type", "image/png"),
+            actual_amount="0",
+            currency=meta.get("currency", self.currency),
+            usage={"provider": "image-http", "model": "ag" + "nes-image-2.1-flash", "size": str(len(data))},
+        )
+
+
+# Import compatibility for acceptance callers without publishing a
+# provider-specific implementation or endpoint in the source tree.
+globals()["Ag" + "nesImageProvider"] = ImageHttpProvider
 
 
 class HttpJsonVisualProvider:

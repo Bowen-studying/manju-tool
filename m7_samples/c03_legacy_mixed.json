@@ -1,0 +1,38 @@
+{
+  "schema_version": "2.0",
+  "title": "legacy-mixed",
+  "creative_bible": {
+    "style_anchor": "ink",
+    "characters": []
+  },
+  "scenes": [
+    {
+      "scene_id": "1",
+      "heading": "EXT. STREET - NIGHT",
+      "shots": [
+        {
+          "shot_id": "1.1",
+          "duration_seconds": 3,
+          "visual": {
+            "description": "wide shot"
+          },
+          "audio": {
+            "speaker": "B",
+            "dialogue": "新旧混合"
+          },
+          "prompts": {
+            "image_cn": "画面",
+            "image_en": "frame"
+          }
+        },
+        {
+          "shot_id": "1.2",
+          "visual_description": "legacy shot",
+          "dialogue_narration": "旧字段台词",
+          "image_prompt_cn": "画面",
+          "image_prompt_en": "frame"
+        }
+      ]
+    }
+  ]
+}

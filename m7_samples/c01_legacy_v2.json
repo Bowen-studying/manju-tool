@@ -1,0 +1,50 @@
+{
+  "schema_version": "2.0",
+  "title": "legacy-v2",
+  "creative_bible": {
+    "style_anchor": "ink",
+    "characters": [
+      {
+        "name": "A"
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "scene_id": "1",
+      "heading": "INT. ROOM - DAY",
+      "shots": [
+        {
+          "shot_id": "1.1",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 1 visual"
+          },
+          "audio": {
+            "speaker": "A",
+            "dialogue": "第1句对白"
+          },
+          "prompts": {
+            "image_cn": "画面1",
+            "image_en": "frame1"
+          }
+        },
+        {
+          "shot_id": "1.2",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 2 visual"
+          },
+          "audio": {
+            "speaker": "A",
+            "dialogue": "第2句对白"
+          },
+          "prompts": {
+            "image_cn": "画面2",
+            "image_en": "frame2"
+          }
+        }
+      ]
+    }
+  ]
+}

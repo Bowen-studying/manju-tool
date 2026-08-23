@@ -94,6 +94,7 @@ class AsyncVideoProvider:
         width: int = 1152,
         height: int = 768,
         timeout_seconds: int = 300,
+        proxy_url: str | None = None,
     ) -> None:
         if not isinstance(api_base, str) or not api_base.startswith("https://"):
             raise ValueError("video provider api_base must use https")
@@ -114,6 +115,10 @@ class AsyncVideoProvider:
         self.timeout_seconds = timeout_seconds
         self.calls = 0
         self.last_request: dict[str, Any] = {}
+        handlers: list = []
+        if proxy_url:
+            handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+        self._opener = urllib.request.build_opener(*handlers) if handlers else urllib.request.build_opener()
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
@@ -146,7 +151,7 @@ class AsyncVideoProvider:
         url = f"{self.api_base}{self.submit_path}"
         for attempt in range(4):
             try:
-                response = _https_opener().open(
+                response = self._opener.open(
                     urllib.request.Request(url, data=body, headers=self._headers(), method="POST"),
                     timeout=self.timeout_seconds,
                 )
@@ -182,7 +187,7 @@ class AsyncVideoProvider:
         url = f"{self.api_base}{self.status_path}?{query}"
         for attempt in range(4):
             try:
-                response = _https_opener().open(
+                response = self._opener.open(
                     urllib.request.Request(url, headers={"Authorization": f"Bearer {self.api_key}"}),
                     timeout=self.timeout_seconds,
                 )
@@ -217,7 +222,7 @@ class AsyncVideoProvider:
 
     def _download_observation(self, provider_job_id: str, video_url: str, meta: dict[str, Any]) -> ProviderObservation:
         try:
-            response = _https_opener().open(
+            response = self._opener.open(
                 urllib.request.Request(video_url, headers={"User-Agent": "Manju-Video-Client/1.0"}),
                 timeout=self.timeout_seconds,
             )

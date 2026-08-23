@@ -1,0 +1,42 @@
+{
+  "schema_version": "2.0",
+  "title": "legacy-silent",
+  "creative_bible": {
+    "style_anchor": "ink",
+    "characters": []
+  },
+  "scenes": [
+    {
+      "scene_id": "1",
+      "heading": "INT. VAULT - NIGHT",
+      "shots": [
+        {
+          "shot_id": "1.1",
+          "duration_seconds": 4,
+          "visual": {
+            "description": "empty vault"
+          },
+          "audio": {},
+          "prompts": {
+            "image_cn": "金库",
+            "image_en": "vault"
+          }
+        },
+        {
+          "shot_id": "1.2",
+          "duration_seconds": 5,
+          "visual": {
+            "description": "door opens"
+          },
+          "audio": {
+            "narration": "门开了"
+          },
+          "prompts": {
+            "image_cn": "开门",
+            "image_en": "door"
+          }
+        }
+      ]
+    }
+  ]
+}

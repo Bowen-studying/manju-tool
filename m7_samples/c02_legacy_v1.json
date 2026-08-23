@@ -1,0 +1,20 @@
+{
+  "schema_version": "1.0",
+  "title": "legacy-v1",
+  "style_anchor": "flat watercolor",
+  "scenes": [
+    {
+      "scene_id": "1",
+      "scene_heading": "EXT. STREET - NIGHT",
+      "shots": [
+        {
+          "shot_id": "1.1",
+          "visual_description": "一个人走过街灯",
+          "image_prompt_cn": "街灯下的人物",
+          "image_prompt_en": "a person walking under a street lamp",
+          "dialogue_narration": "夜色很静。"
+        }
+      ]
+    }
+  ]
+}

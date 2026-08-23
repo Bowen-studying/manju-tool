@@ -1,0 +1,500 @@
+{
+  "schema_version": "2.0",
+  "title": "legacy-v2",
+  "creative_bible": {
+    "style_anchor": "ink",
+    "characters": [
+      {
+        "name": "C"
+      }
+    ]
+  },
+  "scenes": [
+    {
+      "scene_id": "1",
+      "heading": "INT. ROOM - DAY",
+      "shots": [
+        {
+          "shot_id": "1.1",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 1 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第1句对白"
+          },
+          "prompts": {
+            "image_cn": "画面1",
+            "image_en": "frame1"
+          }
+        },
+        {
+          "shot_id": "1.2",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 2 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第2句对白"
+          },
+          "prompts": {
+            "image_cn": "画面2",
+            "image_en": "frame2"
+          }
+        },
+        {
+          "shot_id": "1.3",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 3 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第3句对白"
+          },
+          "prompts": {
+            "image_cn": "画面3",
+            "image_en": "frame3"
+          }
+        },
+        {
+          "shot_id": "1.4",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 4 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第4句对白"
+          },
+          "prompts": {
+            "image_cn": "画面4",
+            "image_en": "frame4"
+          }
+        },
+        {
+          "shot_id": "1.5",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 5 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第5句对白"
+          },
+          "prompts": {
+            "image_cn": "画面5",
+            "image_en": "frame5"
+          }
+        },
+        {
+          "shot_id": "1.6",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 6 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第6句对白"
+          },
+          "prompts": {
+            "image_cn": "画面6",
+            "image_en": "frame6"
+          }
+        },
+        {
+          "shot_id": "1.7",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 7 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第7句对白"
+          },
+          "prompts": {
+            "image_cn": "画面7",
+            "image_en": "frame7"
+          }
+        },
+        {
+          "shot_id": "1.8",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 8 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第8句对白"
+          },
+          "prompts": {
+            "image_cn": "画面8",
+            "image_en": "frame8"
+          }
+        },
+        {
+          "shot_id": "1.9",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 9 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第9句对白"
+          },
+          "prompts": {
+            "image_cn": "画面9",
+            "image_en": "frame9"
+          }
+        },
+        {
+          "shot_id": "1.10",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 10 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第10句对白"
+          },
+          "prompts": {
+            "image_cn": "画面10",
+            "image_en": "frame10"
+          }
+        },
+        {
+          "shot_id": "1.11",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 11 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第11句对白"
+          },
+          "prompts": {
+            "image_cn": "画面11",
+            "image_en": "frame11"
+          }
+        },
+        {
+          "shot_id": "1.12",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 12 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第12句对白"
+          },
+          "prompts": {
+            "image_cn": "画面12",
+            "image_en": "frame12"
+          }
+        },
+        {
+          "shot_id": "1.13",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 13 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第13句对白"
+          },
+          "prompts": {
+            "image_cn": "画面13",
+            "image_en": "frame13"
+          }
+        },
+        {
+          "shot_id": "1.14",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 14 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第14句对白"
+          },
+          "prompts": {
+            "image_cn": "画面14",
+            "image_en": "frame14"
+          }
+        },
+        {
+          "shot_id": "1.15",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 15 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第15句对白"
+          },
+          "prompts": {
+            "image_cn": "画面15",
+            "image_en": "frame15"
+          }
+        },
+        {
+          "shot_id": "1.16",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 16 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第16句对白"
+          },
+          "prompts": {
+            "image_cn": "画面16",
+            "image_en": "frame16"
+          }
+        },
+        {
+          "shot_id": "1.17",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 17 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第17句对白"
+          },
+          "prompts": {
+            "image_cn": "画面17",
+            "image_en": "frame17"
+          }
+        },
+        {
+          "shot_id": "1.18",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 18 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第18句对白"
+          },
+          "prompts": {
+            "image_cn": "画面18",
+            "image_en": "frame18"
+          }
+        },
+        {
+          "shot_id": "1.19",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 19 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第19句对白"
+          },
+          "prompts": {
+            "image_cn": "画面19",
+            "image_en": "frame19"
+          }
+        },
+        {
+          "shot_id": "1.20",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 20 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第20句对白"
+          },
+          "prompts": {
+            "image_cn": "画面20",
+            "image_en": "frame20"
+          }
+        },
+        {
+          "shot_id": "1.21",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 21 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第21句对白"
+          },
+          "prompts": {
+            "image_cn": "画面21",
+            "image_en": "frame21"
+          }
+        },
+        {
+          "shot_id": "1.22",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 22 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第22句对白"
+          },
+          "prompts": {
+            "image_cn": "画面22",
+            "image_en": "frame22"
+          }
+        },
+        {
+          "shot_id": "1.23",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 23 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第23句对白"
+          },
+          "prompts": {
+            "image_cn": "画面23",
+            "image_en": "frame23"
+          }
+        },
+        {
+          "shot_id": "1.24",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 24 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第24句对白"
+          },
+          "prompts": {
+            "image_cn": "画面24",
+            "image_en": "frame24"
+          }
+        },
+        {
+          "shot_id": "1.25",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 25 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第25句对白"
+          },
+          "prompts": {
+            "image_cn": "画面25",
+            "image_en": "frame25"
+          }
+        },
+        {
+          "shot_id": "1.26",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 26 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第26句对白"
+          },
+          "prompts": {
+            "image_cn": "画面26",
+            "image_en": "frame26"
+          }
+        },
+        {
+          "shot_id": "1.27",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 27 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第27句对白"
+          },
+          "prompts": {
+            "image_cn": "画面27",
+            "image_en": "frame27"
+          }
+        },
+        {
+          "shot_id": "1.28",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 28 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第28句对白"
+          },
+          "prompts": {
+            "image_cn": "画面28",
+            "image_en": "frame28"
+          }
+        },
+        {
+          "shot_id": "1.29",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 29 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第29句对白"
+          },
+          "prompts": {
+            "image_cn": "画面29",
+            "image_en": "frame29"
+          }
+        },
+        {
+          "shot_id": "1.30",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 30 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第30句对白"
+          },
+          "prompts": {
+            "image_cn": "画面30",
+            "image_en": "frame30"
+          }
+        },
+        {
+          "shot_id": "1.31",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 31 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第31句对白"
+          },
+          "prompts": {
+            "image_cn": "画面31",
+            "image_en": "frame31"
+          }
+        },
+        {
+          "shot_id": "1.32",
+          "duration_seconds": 2.5,
+          "visual": {
+            "description": "Shot 32 visual"
+          },
+          "audio": {
+            "speaker": "C",
+            "dialogue": "第32句对白"
+          },
+          "prompts": {
+            "image_cn": "画面32",
+            "image_en": "frame32"
+          }
+        }
+      ]
+    }
+  ]
+}
