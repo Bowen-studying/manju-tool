@@ -90,6 +90,10 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
     video_prompt_attached = False
     video_prompt_stage_run_id = ""
     video_prompt_outcome = ""
+    video_scheduled = False
+    video_attached = False
+    video_stage_run_id = ""
+    video_outcome = ""
     dag_version = "production-m1-v1"
     stage_sequence = ("storyboard",)
     pause_requested = False
@@ -204,6 +208,13 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                              else voice_director_outcome == "completed" if "voice_director" in stage_sequence
                              else voice_outcome == "completed" if "voice_script" in stage_sequence else stage_outcome == "completed")
                         and not visual_scheduled)
+                    or (target_stage == "video" and "video" in stage_sequence
+                        and (visual_outcome == "completed" if "visual" in stage_sequence
+                             else video_prompt_outcome == "completed" if "video_prompt" in stage_sequence
+                             else voice_tts_outcome == "completed" if "voice_tts" in stage_sequence
+                             else voice_director_outcome == "completed" if "voice_director" in stage_sequence
+                             else voice_outcome == "completed" if "voice_script" in stage_sequence else stage_outcome == "completed")
+                        and not video_scheduled)
                 )
             )
         elif event_type == "stage_run_attached":
@@ -217,6 +228,7 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                     or (target_stage == "voice_tts" and voice_tts_scheduled and not voice_tts_attached and not voice_tts_outcome)
                     or (target_stage == "video_prompt" and video_prompt_scheduled and not video_prompt_attached and not video_prompt_outcome)
                     or (target_stage == "visual" and visual_scheduled and not visual_attached and not visual_outcome)
+                    or (target_stage == "video" and video_scheduled and not video_attached and not video_outcome)
                 )
             )
         elif event_type in {"stage_completed", "stage_needs_review", "stage_failed"}:
@@ -233,6 +245,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                     and not video_prompt_outcome and payload.get("stage_run_id") == video_prompt_stage_run_id)
                 or (target_stage == "visual" and "visual" in stage_sequence and visual_attached
                     and not visual_outcome and payload.get("stage_run_id") == visual_stage_run_id)
+                or (target_stage == "video" and "video" in stage_sequence and video_attached
+                    and not video_outcome and payload.get("stage_run_id") == video_stage_run_id)
             )
         elif event_type == "pause_requested":
             valid = run_started and status == ProductionStatus.RUNNING.value and not pause_requested
@@ -243,7 +257,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type == "run_completed":
             outcomes = {"storyboard": stage_outcome, "voice_script": voice_outcome,
                         "voice_director": voice_director_outcome, "voice_tts": voice_tts_outcome,
-                        "video_prompt": video_prompt_outcome, "visual": visual_outcome}
+                        "video_prompt": video_prompt_outcome, "visual": visual_outcome,
+                        "video": video_outcome}
             valid = status == ProductionStatus.RUNNING.value and all(
                 outcomes[item] == "completed" for item in stage_sequence
             )
@@ -438,6 +453,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                     voice_tts_scheduled = True
                 elif target_stage == "video_prompt":
                     video_prompt_scheduled = True
+                elif target_stage == "video":
+                    video_scheduled = True
                 else:
                     visual_scheduled = True
             else:
@@ -456,6 +473,9 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 elif target_stage == "video_prompt":
                     video_prompt_attached = True
                     video_prompt_stage_run_id = str(payload.get("stage_run_id", ""))
+                elif target_stage == "video":
+                    video_attached = True
+                    video_stage_run_id = str(payload.get("stage_run_id", ""))
                 else:
                     visual_attached = True
                     visual_stage_run_id = str(payload.get("stage_run_id", ""))
@@ -482,6 +502,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 voice_tts_outcome = "completed"
             elif payload.get("stage") == "video_prompt":
                 video_prompt_outcome = "completed"
+            elif payload.get("stage") == "video":
+                video_outcome = "completed"
             else:
                 visual_outcome = "completed"
             status = (
@@ -505,6 +527,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 voice_tts_outcome = "needs_review"
             elif payload.get("stage") == "video_prompt":
                 video_prompt_outcome = "needs_review"
+            elif payload.get("stage") == "video":
+                video_outcome = "needs_review"
             else:
                 visual_outcome = "needs_review"
             status = ProductionStatus.NEEDS_REVIEW.value
@@ -523,6 +547,8 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
                 voice_tts_outcome = "failed"
             elif payload.get("stage") == "video_prompt":
                 video_prompt_outcome = "failed"
+            elif payload.get("stage") == "video":
+                video_outcome = "failed"
             else:
                 visual_outcome = "failed"
             status = ProductionStatus.FAILED.value
@@ -559,7 +585,9 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             stage = request.stage
             status = ProductionStatus.AWAITING_APPROVAL.value
             reason_code = (
-                ReasonCode.PAID_VOICE_TTS_APPROVAL_REQUIRED.value
+                ReasonCode.PAID_VIDEO_APPROVAL_REQUIRED.value
+                if request.stage == "video"
+                else ReasonCode.PAID_VOICE_TTS_APPROVAL_REQUIRED.value
                 if request.stage == "voice_tts"
                 else ReasonCode.PAID_VISUAL_BATCH_APPROVAL_REQUIRED.value
             )
@@ -570,7 +598,9 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
         elif event_type == "approval_approved":
             approval_decision = "approved"
             reason_code = (
-                ReasonCode.PAID_VOICE_TTS_APPROVAL_REQUIRED.value
+                ReasonCode.PAID_VIDEO_APPROVAL_REQUIRED.value
+                if (pending_request or ApprovalRequest).stage == "video"
+                else ReasonCode.PAID_VOICE_TTS_APPROVAL_REQUIRED.value
                 if (pending_request or ApprovalRequest).stage == "voice_tts"
                 else ReasonCode.PAID_VISUAL_BATCH_APPROVAL_REQUIRED.value
             )
@@ -579,7 +609,9 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             approval_decision = "rejected"
             status = ProductionStatus.NEEDS_REVIEW.value
             reason_code = (
-                ReasonCode.PAID_VOICE_TTS_REJECTED.value
+                ReasonCode.PAID_VIDEO_REJECTED.value
+                if (pending_request or ApprovalRequest).stage == "video"
+                else ReasonCode.PAID_VOICE_TTS_REJECTED.value
                 if (pending_request or ApprovalRequest).stage == "voice_tts"
                 else ReasonCode.PAID_VISUAL_BATCH_REJECTED.value
             )
@@ -594,7 +626,9 @@ def _reduce_single_run(events: list[dict[str, Any]]) -> ProductionSnapshot:
             active_grant_id = ""
             status = ProductionStatus.NEEDS_REVIEW.value
             reason_code = (
-                ReasonCode.PAID_VOICE_TTS_REJECTED.value
+                ReasonCode.PAID_VIDEO_REJECTED.value
+                if (pending_request or ApprovalRequest).stage == "video"
+                else ReasonCode.PAID_VOICE_TTS_REJECTED.value
                 if (pending_request or ApprovalRequest).stage == "voice_tts"
                 else ReasonCode.PAID_VISUAL_BATCH_REJECTED.value
             )

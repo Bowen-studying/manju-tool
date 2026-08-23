@@ -130,6 +130,23 @@ class ProjectStore:
                 value = video_prompt.get(key)
                 if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0 or float(value) > upper:
                     raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"production.video_prompt {key} is invalid")
+        video = production.get("video", {"enabled": False}) if isinstance(production, dict) else None
+        if not isinstance(video, dict) or not isinstance(video.get("enabled"), bool):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.video contract is invalid")
+        if video.get("enabled"):
+            if (
+                video.get("mode") not in {"mock", "paid_agnes"}
+                or video.get("schema_version") != "video-run-v1"
+                or not isinstance(video.get("model_profile"), str)
+                or not video.get("model_profile")
+            ):
+                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.video binding is invalid")
+            if not isinstance(video.get("maximum_amount"), str) or not video["maximum_amount"].isdigit():
+                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.video budget is invalid")
+            if not isinstance(video.get("provider_profile"), str) or not video["provider_profile"]:
+                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.video provider profile is invalid")
+            if video.get("provider_request") is not None and not isinstance(video.get("provider_request"), dict):
+                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.video provider request is invalid")
         if visual.get("enabled"):
             engine = visual.get("engine")
             profile = visual.get("provider_profile")

@@ -11,6 +11,7 @@ import os
 import shutil
 import stat
 import uuid
+import time
 from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
@@ -21,6 +22,7 @@ from manju.pipeline.storyboard_supervisor import (
     SUPERVISOR_TOOLSET_VERSION,
 )
 from manju.production.adapters.storyboard import StoryboardStageAdapter
+from manju.production.adapters.video import VideoStageAdapter
 from manju.production.adapters.visual import VisualStageAdapter
 from manju.production.adapters.voice_script import VoiceScriptStageAdapter
 from manju.production.adapters.voice_director import VoiceDirectorStageAdapter
@@ -46,6 +48,7 @@ from manju.production.models import (
     M4_1_DAG_VERSION,
     M4_2_DAG_VERSION,
     M5_DAG_VERSION,
+    M5_1_DAG_VERSION,
     PROJECT_SCHEMA_VERSION,
     ProductionError,
     ProductionSnapshot,
@@ -59,6 +62,7 @@ from manju.production.paths import ProjectPaths
 from manju.production.scheduler import ProductionScheduler
 from manju.production.store import ProjectStore, sha256_file
 from manju.production.tts_providers import TTS_CURRENCY
+from manju.production.video_providers import VIDEO_CURRENCY
 from manju.utils.ai import get_ai_config
 from manju.utils.runtime import atomic_write_json, read_json, safe_filename
 from manju.utils.runtime import atomic_write_bytes
@@ -106,6 +110,12 @@ def initialize_project(
     video_prompt_max_prompt_chars: int = 8192,
     video_prompt_max_duration_seconds: float = 600.0,
     video_prompt_max_total_duration_seconds: float = 3600.0,
+    video_enabled: bool = False,
+    video_model_profile: str = "mock-video-v1",
+    video_mode: str = "mock",
+    video_maximum_amount: str = "1000",
+    video_provider_profile: str = "agnes-video",
+    video_provider_request: dict[str, Any] | None = None,
 ) -> ProductionSnapshot:
     source = os.path.abspath(source)
     if source_type not in {"novel", "script", "storyboard"}:
@@ -138,6 +148,15 @@ def initialize_project(
         or int(visual_contractual_tariff_amount) > int(visual_maximum_amount)
     ):
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "visual contractual tariff is invalid")
+    if video_enabled:
+        if not isinstance(video_model_profile, str) or not video_model_profile.strip():
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "video model profile is invalid")
+        if video_mode not in {"mock", "paid_agnes"}:
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "video mode is invalid")
+        if not str(video_maximum_amount).isdigit() or not video_provider_profile.strip():
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "video budget or provider profile is invalid")
+        if video_provider_request is not None and not isinstance(video_provider_request, dict):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "video provider request is invalid")
     video_prompt_limits = {
         "max_input_bytes": video_prompt_max_input_bytes,
         "max_output_bytes": video_prompt_max_output_bytes,
@@ -234,7 +253,15 @@ def initialize_project(
                 **video_prompt_limits,
             },
             "voice": {"enabled": False},
-            "video": {"enabled": False},
+            "video": {
+                "enabled": video_enabled,
+                "mode": video_mode if video_enabled else "",
+                "schema_version": "video-run-v1" if video_enabled else "",
+                "model_profile": video_model_profile if video_enabled else "",
+                "maximum_amount": video_maximum_amount if video_enabled else "",
+                "provider_profile": video_provider_profile if video_enabled else "",
+                "provider_request": video_provider_request if video_enabled else None,
+            },
         },
         "provider_profiles": {"llm": provider_profile},
         "integrity": {"hmac_key_id": hmac_key_id},
@@ -291,6 +318,7 @@ class ProductionService:
         voice_director_adapter: VoiceDirectorStageAdapter | None = None,
         voice_tts_adapter: VoiceTTSStageAdapter | None = None,
         video_prompt_adapter: VideoPromptStageAdapter | None = None,
+        video_adapter: VideoStageAdapter | None = None,
         hmac_key_provider: HmacKeyProvider | None = None,
         listeners: tuple[SnapshotListener, ...] = (),
     ):
@@ -309,6 +337,7 @@ class ProductionService:
         if type(candidate_video_prompt) is not VideoPromptStageAdapter:
             raise TypeError("M5.0 offline video prompts accept only VideoPromptStageAdapter")
         self.video_prompt_adapter = candidate_video_prompt
+        self.video_adapter = video_adapter or VideoStageAdapter(provider=None)
         self.scheduler = ProductionScheduler()
         self.listeners = listeners
 
@@ -827,6 +856,18 @@ class ProductionService:
                 raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "video-prompt storyboard graph output is absent")
             dependencies.append(ArtifactRef.from_dict(storyboard_outputs[0]).to_dict())
             logical_id = "video_prompt.main"
+        elif stage == "video":
+            prompt_event = next(
+                (event for event in reversed(events) if event.get("run_id") == run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "video_prompt"),
+                None,
+            )
+            prompt_outputs = ((prompt_event or {}).get("payload") or {}).get("produced_artifacts") or ((prompt_event or {}).get("payload") or {}).get("reused_artifacts") or []
+            if len(prompt_outputs) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "video video-prompt graph output is absent")
+            dependencies.append(ArtifactRef.from_dict(prompt_outputs[0]).to_dict())
+            logical_id = "video.main"
         else:
             raise ProductionError(ReasonCode.INTERNAL_ERROR.value, f"unknown output stage: {stage}")
         record = ArtifactRecord.from_dict({
@@ -1111,7 +1152,9 @@ class ProductionService:
             grant_event = next((event for event in events if event.get("run_id") == snapshot.run_id and event.get("event_type") == "grant_issued"), None)
             if approval_event is not None or grant_event is not None:
                 grant_stage = str(((grant_event or {}).get("payload") or {}).get("grant", {}).get("stage", ""))
-                if grant_stage == "voice_tts":
+                if grant_stage == "video":
+                    grant = self._active_video_grant(events, project, snapshot.run_id)
+                elif grant_stage == "voice_tts":
                     grant = self._active_voice_tts_grant(events, project, snapshot.run_id)
                 else:
                     grant = self._active_visual_grant(events, project, snapshot.run_id)
@@ -1387,6 +1430,7 @@ class ProductionService:
         voice_director = project["production"].get("voice_director", {"enabled": False})
         voice_tts = project["production"].get("voice_tts", {"enabled": False})
         video_prompt = project["production"].get("video_prompt", {"enabled": False})
+        video = project["production"].get("video", {"enabled": False})
         if voice_tts.get("enabled"):
             configured_profile = voice_tts.get("model_profile")
             adapter_profile = self.voice_tts_adapter.model_profile
@@ -1415,8 +1459,12 @@ class ProductionService:
         if voice_tts.get("enabled"):
             voice_stages.append("voice_tts")
         if video_prompt.get("enabled"):
-            dag_version = M5_DAG_VERSION
-            stage_sequence = ["storyboard", *voice_stages, "video_prompt"] + (["visual"] if visual.get("enabled") else [])
+            if video.get("enabled"):
+                dag_version = M5_1_DAG_VERSION
+                stage_sequence = ["storyboard", *voice_stages, "video_prompt"] + (["visual"] if visual.get("enabled") else []) + ["video"]
+            else:
+                dag_version = M5_DAG_VERSION
+                stage_sequence = ["storyboard", *voice_stages, "video_prompt"] + (["visual"] if visual.get("enabled") else [])
         elif voice_tts.get("enabled"):
             dag_version = M4_2_DAG_VERSION
             stage_sequence = ["storyboard", "voice_script", "voice_director", "voice_tts"] + (["visual"] if visual.get("enabled") else [])
@@ -1445,6 +1493,7 @@ class ProductionService:
                 "voice_director": self.voice_director_adapter.contract_version if voice_director.get("enabled") else "",
                 "voice_tts": self.voice_tts_adapter.contract_version if voice_tts.get("enabled") else "",
                 "video_prompt": self.video_prompt_adapter.contract_version if video_prompt.get("enabled") else "",
+                "video": self.video_adapter.contract_version if video.get("enabled") else "",
             },
             "models": {
                 "storyboard": self._configured_model(),
@@ -1571,7 +1620,7 @@ class ProductionService:
     ) -> None:
         payload = terminal.get("payload") if isinstance(terminal.get("payload"), dict) else {}
         stage = str(payload.get("stage", ""))
-        if stage not in {"storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "visual"}:
+        if stage not in {"storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "visual", "video"}:
             raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "terminal stage is unsupported")
         authority_path = str(payload.get("authority_path", ""))
         expected_hash = str(payload.get("authority_hash", ""))
@@ -2578,6 +2627,220 @@ class ProductionService:
                 return self._snapshot_and_project()
             return self._snapshot_and_project()
 
+    def _advance_video_paid_action(
+        self, *, project: dict[str, Any], snapshot: ProductionSnapshot, contract: dict[str, Any]
+    ) -> ProductionSnapshot:
+        """Paid video (M5.1): approval -> grant -> reserve -> submit -> poll -> settle -> publish.
+
+        The provider is asynchronous: submit returns a video_id that is
+        polled by observe_operation.  A pending observation keeps the
+        operation in submitted state (no settle, no cost); a failed or
+        unknown observation settles without ever re-submitting.
+        """
+        run_id = snapshot.run_id
+        stage_run_id = f"video-{run_id.removeprefix('run_')}"
+        output_dir = self.paths.video_dir(run_id, stage_run_id)
+        with ProjectLock(self.paths.lock_file):
+            project = self.store.load_project()
+            events = self.store.events.read()
+            snapshot = self.store.snapshot()
+            contract = self.store.validate_contract(project, run_id)
+            self._validate_runtime_contract(contract)
+            if not has_event(events, run_id, "stage_scheduled", "video"):
+                self.store.events.append(
+                    "stage_scheduled", project_id=project["project_id"], run_id=run_id,
+                    payload={"stage": "video", "stage_invocation_id": stage_run_id},
+                )
+            if not has_event(events, run_id, "stage_run_attached", "video"):
+                self.store.events.append(
+                    "stage_run_attached", project_id=project["project_id"], run_id=run_id,
+                    payload={"stage": "video", "stage_run_id": stage_run_id},
+                )
+            events = self.store.events.read()
+            prompt_event = next(
+                (event for event in reversed(events) if event.get("run_id") == run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "video_prompt"), None,
+            )
+            prompt_payload = (prompt_event or {}).get("payload") or {}
+            prompt_public = prompt_payload.get("artifacts") or []
+            prompt_graph = prompt_payload.get("produced_artifacts") or prompt_payload.get("reused_artifacts") or []
+            if len(prompt_public) != 1 or len(prompt_graph) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "video requires video-prompt input")
+            prompt_ref = ArtifactRef.from_dict(prompt_graph[0]).to_dict()
+            prompt_path = self._stage_private_artifact(
+                path=str(prompt_public[0].get("path", "")), version_id=prompt_ref["version_id"],
+                logical_id="video_prompt.main", output_dir=output_dir,
+            )
+            key_id = str(project.get("integrity", {}).get("hmac_key_id", ""))
+            approval_event = next(
+                (event for event in events if event.get("run_id") == run_id and event.get("event_type") == "approval_requested"), None,
+            )
+            if approval_event is None:
+                request = self.video_adapter.plan(
+                    project_id=project["project_id"], run_id=run_id, stage_run_id=stage_run_id,
+                    output_dir=output_dir, video_prompt_path=prompt_path,
+                    video_prompt_artifact=prompt_ref,
+                    settings=project["production"]["video"],
+                )
+                self.store.events.append("approval_requested", project_id=project["project_id"], run_id=run_id,
+                                         payload={"approval_request": request.to_dict(), "key_id": key_id})
+                return self._snapshot_and_project()
+            grant_event = next(
+                (event for event in events if event.get("run_id") == run_id and event.get("event_type") == "grant_issued"), None,
+            )
+            if grant_event is None:
+                return self._snapshot_and_project()
+            operation_events = [event for event in events if event.get("run_id") == run_id and event.get("event_type") in {"call_reserved", "call_submitted", "call_settled", "call_reconciled"}]
+            latest_operation = None
+            if operation_events:
+                latest_operation = OperationRecord.from_dict((operation_events[-1].get("payload") or {}).get("operation", {}))
+            if latest_operation is None:
+                grant = self._active_video_grant(events, project, run_id)
+                binding = grant.operation_bindings[0]
+                bound_request = binding.get("provider_request")
+                operation = OperationRecord(
+                    binding["operation_id"], grant.grant_id, binding["kind"], binding["input_fingerprint"],
+                    grant.provider_profile, reservation_amount=grant.maximum_amount, currency=grant.currency,
+                    provider_request=dict(bound_request) if isinstance(bound_request, dict) else None,
+                )
+                self.store.events.append("call_reserved", project_id=project["project_id"], run_id=run_id,
+                                         payload={"operation": operation.to_dict(), "key_id": key_id})
+                return self._snapshot_and_project()
+            if latest_operation.status == "reserved":
+                self._active_video_grant(events, project, run_id)
+                try:
+                    provider_job_id = self.video_adapter.submit_operation(
+                        operation=latest_operation.to_dict(), stage_run_id=stage_run_id, output_dir=output_dir,
+                        video_prompt_path=prompt_path, video_prompt_ref=prompt_ref,
+                    )
+                    operation = latest_operation.submit(provider_job_id)
+                    self.store.events.append("call_submitted", project_id=project["project_id"], run_id=run_id,
+                                             payload={"operation": operation.to_dict(), "key_id": key_id})
+                except ProductionError as exc:
+                    if exc.code == ReasonCode.OPERATION_OUTCOME_UNKNOWN.value:
+                        operation = latest_operation.submit(str(latest_operation.operation_id))
+                        self.store.events.append("call_submitted", project_id=project["project_id"], run_id=run_id,
+                                                 payload={"operation": operation.to_dict(), "key_id": key_id})
+                        unknown = operation.settle(
+                            outcome="outcome_unknown", result_fingerprint="",
+                            usage={"cost_status": "unknown", "cost_source": "unknown"},
+                        )
+                        self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                                 payload={"operation": unknown.to_dict(), "key_id": key_id})
+                        return self._snapshot_and_project()
+                    failed = latest_operation.submit(str(latest_operation.operation_id))
+                    self.store.events.append("call_submitted", project_id=project["project_id"], run_id=run_id,
+                                             payload={"operation": failed.to_dict(), "key_id": key_id})
+                    settled = failed.settle(
+                        outcome="failed", result_fingerprint="",
+                        usage={"actual_amount": "0", "currency": VIDEO_CURRENCY,
+                               "cost_status": "final", "cost_source": "provider_response"},
+                    )
+                    self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                             payload={"operation": settled.to_dict(), "key_id": key_id})
+                    return self._snapshot_and_project()
+                return self._snapshot_and_project()
+            if latest_operation.status == "submitted":
+                self._active_video_grant(events, project, run_id)
+                try:
+                    observed = self.video_adapter.observe_operation(
+                        stage_run_id=stage_run_id, output_dir=output_dir,
+                        operation=latest_operation.to_dict(),
+                    )
+                except ProductionError as exc:
+                    if exc.code == ReasonCode.OPERATION_OUTCOME_UNKNOWN.value:
+                        operation = latest_operation.settle(
+                            outcome="outcome_unknown", result_fingerprint="",
+                            usage={"cost_status": "unknown", "cost_source": "unknown"},
+                        )
+                        self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                                 payload={"operation": operation.to_dict(), "key_id": key_id})
+                        return self._snapshot_and_project()
+                    raise
+                if observed.outcome == "pending":
+                    # Slow the poll loop for the real free provider; mock stays fast.
+                    if project["production"]["video"].get("mode") == "paid_agnes":
+                        time.sleep(15)
+                    return self._snapshot_and_project()
+                if observed.outcome != "succeeded":
+                    operation = latest_operation.settle(
+                        outcome="failed", result_fingerprint="",
+                        usage={"actual_amount": "0", "currency": VIDEO_CURRENCY,
+                               "cost_status": "final", "cost_source": "provider_response"},
+                    )
+                    self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                             payload={"operation": operation.to_dict(), "key_id": key_id})
+                    return self._snapshot_and_project()
+                operation = latest_operation.settle(
+                    outcome=observed.outcome,
+                    result_fingerprint=observed.result_fingerprint,
+                    usage=observed.settled_usage,
+                )
+                self.store.events.append("call_settled", project_id=project["project_id"], run_id=run_id,
+                                         payload={"operation": operation.to_dict(), "key_id": key_id})
+                return self._snapshot_and_project()
+            if latest_operation.status == "settled" and latest_operation.outcome == "succeeded":
+                result = self.video_adapter.publish_result(
+                    stage_run_id=stage_run_id, output_dir=output_dir,
+                    operation=latest_operation.to_dict(),
+                )
+                if result.status != "completed":
+                    self.store.events.append(
+                        "stage_failed", project_id=project["project_id"], run_id=run_id,
+                        payload={"stage": "video", "stage_run_id": stage_run_id,
+                                 "reason_code": result.reason_code or ReasonCode.VIDEO_GENERATION_FAILED.value,
+                                 "message": "video paid publish failed"},
+                    )
+                    return self._snapshot_and_project()
+                published_artifacts = [{**item, "path": self._relative_artifact_path(str(item.get("path", "")))} for item in result.artifacts]
+                self.store.events.append("stage_completed", project_id=project["project_id"], run_id=run_id,
+                                         payload={"stage": "video", "stage_run_id": stage_run_id,
+                                                  "authority_path": self._relative_artifact_path(result.authority_path), "authority_hash": result.authority_hash,
+                                                  "authority_files": [{"path": self._relative_artifact_path(item["path"]), "sha256": item["sha256"]} for item in result.authority_files],
+                                                  "artifacts": published_artifacts,
+                                                  "produced_artifacts": self._produced_artifacts(
+                                                      stage="video", run_id=run_id, contract=contract,
+                                                      artifacts=published_artifacts, events=events,
+                                                  )})
+                return self._snapshot_and_project()
+            if latest_operation.status == "settled" and latest_operation.outcome == "failed":
+                self.store.events.append("stage_failed", project_id=project["project_id"], run_id=run_id,
+                                         payload={"stage": "video", "stage_run_id": stage_run_id,
+                                                  "reason_code": ReasonCode.VIDEO_GENERATION_FAILED.value,
+                                                  "message": "video paid provider reported failure"})
+                return self._snapshot_and_project()
+            return self._snapshot_and_project()
+
+    def _active_video_grant(self, events: list[dict[str, Any]], project: dict[str, Any], run_id: str) -> Grant:
+        """Validate the still-active signed grant immediately before paid effects."""
+        approval_event = next(
+            (event for event in events if event.get("run_id") == run_id and event.get("event_type") == "approval_requested"),
+            None,
+        )
+        grant_event = next(
+            (event for event in events if event.get("run_id") == run_id and event.get("event_type") == "grant_issued"),
+            None,
+        )
+        if approval_event is None or grant_event is None:
+            raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "video grant authority is missing")
+        request = ApprovalRequest.from_dict((approval_event.get("payload") or {}).get("approval_request", {}))
+        grant = Grant.from_dict((grant_event.get("payload") or {}).get("grant", {}))
+        if any(
+            event.get("run_id") == run_id
+            and event.get("event_type") == "grant_revoked"
+            and (event.get("payload") or {}).get("grant_id") == grant.grant_id
+            for event in events
+        ):
+            raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "grant has been revoked")
+        key = self.store.events.key_provider.get_key(grant.key_id) if self.store.events.key_provider else None
+        if not key:
+            raise ProductionError(ReasonCode.HMAC_KEY_UNAVAILABLE.value)
+        grant.validate_against(request, key=key, now=utc_now())
+        if grant.project_id != project["project_id"] or grant.run_id != run_id or grant.stage != "video":
+            raise ProductionError(ReasonCode.GRANT_CONTRACT_INVALID.value, "grant does not bind active video run")
+        return grant
+
     def _active_voice_tts_grant(self, events: list[dict[str, Any]], project: dict[str, Any], run_id: str) -> Grant:
         """Validate the still-active signed grant immediately before paid effects."""
         approval_event = next(
@@ -2630,6 +2893,10 @@ class ProductionService:
                             project=probe_project, snapshot=probe_snapshot, contract=probe_contract,
                         )
                     return self._advance_voice_tts_action(
+                        project=probe_project, snapshot=probe_snapshot, contract=probe_contract,
+                    )
+                if probe_action == "advance_video" and self._stage_execution_action(probe_contract, "video") != "reuse":
+                    return self._advance_video_paid_action(
                         project=probe_project, snapshot=probe_snapshot, contract=probe_contract,
                     )
             with ProjectLock(self.paths.lock_file):

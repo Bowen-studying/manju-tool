@@ -18,6 +18,7 @@ M4_DAG_VERSION = "production-m4-v1"
 M4_1_DAG_VERSION = "production-m4.1-v1"
 M4_2_DAG_VERSION = "production-m4.2-v1"
 M5_DAG_VERSION = "production-m5.0-v1"
+M5_1_DAG_VERSION = "production-m5.1-v1"
 M2_CONTRACT_VERSION = "1"
 
 # M5.0 is deliberately bounded before any storyboard bytes are interpreted.
@@ -80,6 +81,20 @@ def stages_for_dag(dag_version: str, declared: Any = None) -> tuple[str, ...]:
         }:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M5.0 stage sequence is invalid")
         return candidate
+    elif dag_version == M5_1_DAG_VERSION:
+        candidate = tuple(declared) if declared is not None else ()
+        if candidate not in {
+            ("storyboard", "video_prompt", "video"),
+            ("storyboard", "video_prompt", "visual", "video"),
+            ("storyboard", "voice_script", "video_prompt", "video"),
+            ("storyboard", "voice_script", "video_prompt", "visual", "video"),
+            ("storyboard", "voice_script", "voice_director", "video_prompt", "video"),
+            ("storyboard", "voice_script", "voice_director", "video_prompt", "visual", "video"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "video"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "visual", "video"),
+        }:
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M5.1 stage sequence is invalid")
+        return candidate
     else:
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"unsupported dag: {dag_version}")
     if declared is not None and tuple(declared) != expected:
@@ -121,6 +136,9 @@ class ReasonCode(str, Enum):
     PAID_VISUAL_BATCH_REJECTED = "PAID_VISUAL_BATCH_REJECTED"
     PAID_VOICE_TTS_APPROVAL_REQUIRED = "PAID_VOICE_TTS_APPROVAL_REQUIRED"
     PAID_VOICE_TTS_REJECTED = "PAID_VOICE_TTS_REJECTED"
+    PAID_VIDEO_APPROVAL_REQUIRED = "PAID_VIDEO_APPROVAL_REQUIRED"
+    PAID_VIDEO_REJECTED = "PAID_VIDEO_REJECTED"
+    VIDEO_GENERATION_FAILED = "VIDEO_GENERATION_FAILED"
     HMAC_KEY_UNAVAILABLE = "HMAC_KEY_UNAVAILABLE"
     SENSITIVE_EVENT_SIGNATURE_INVALID = "SENSITIVE_EVENT_SIGNATURE_INVALID"
     APPROVAL_CONTRACT_INVALID = "APPROVAL_CONTRACT_INVALID"
@@ -159,6 +177,8 @@ REASON_DEFAULTS.update({
     ReasonCode.PAID_VISUAL_BATCH_REJECTED.value: ("付费视觉批次已被拒绝", 2),
     ReasonCode.PAID_VOICE_TTS_APPROVAL_REQUIRED.value: ("付费 TTS 批次等待人工审批", 3),
     ReasonCode.PAID_VOICE_TTS_REJECTED.value: ("付费 TTS 批次已被拒绝", 2),
+    ReasonCode.PAID_VIDEO_APPROVAL_REQUIRED.value: ("付费视频批次等待人工审批", 3),
+    ReasonCode.PAID_VIDEO_REJECTED.value: ("付费视频批次已被拒绝", 2),
     ReasonCode.HMAC_KEY_UNAVAILABLE.value: ("敏感操作所需 HMAC 密钥不可用", 4),
     ReasonCode.SENSITIVE_EVENT_SIGNATURE_INVALID.value: ("敏感事件签名无效", 1),
     ReasonCode.APPROVAL_CONTRACT_INVALID.value: ("审批合同无效", 1),
@@ -171,6 +191,7 @@ REASON_DEFAULTS.update({
     ReasonCode.VOICE_DIRECTOR_FAILED.value: ("配音导演阶段失败", 1),
     ReasonCode.VOICE_TTS_FAILED.value: ("TTS 音频阶段失败", 1),
     ReasonCode.VIDEO_PROMPT_FAILED.value: ("离线视频提示词阶段失败", 1),
+    ReasonCode.VIDEO_GENERATION_FAILED.value: ("真实视频生成阶段失败", 1),
 })
 
 

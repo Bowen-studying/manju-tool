@@ -13,7 +13,8 @@ from manju.production.models import M2_CONTRACT_VERSION, ProductionError, Reason
 
 
 _PUBLIC_PROVIDER_REQUEST_FIELDS = frozenset(
-    {"prompt", "model", "size", "quality", "n", "response_format", "voice", "sample_rate", "voice_map"}
+    {"prompt", "model", "size", "quality", "n", "response_format", "voice", "sample_rate", "voice_map",
+     "num_frames", "frame_rate", "width", "height"}
 )
 
 
@@ -151,8 +152,9 @@ class ApprovalRequest:
         if (self.stage, self.kind) not in {
             ("visual", "paid_visual_batch"),
             ("voice_tts", "paid_voice_tts_batch"),
+            ("video", "paid_video_batch"),
         }:
-            raise ProductionError(code.value, "M2 only permits visual or voice-tts paid-batch approvals")
+            raise ProductionError(code.value, "M2 only permits visual, voice-tts or video paid-batch approvals")
         if not self.artifact_versions or not all(
             isinstance(item, dict) and _require(item.get("artifact_id"), "artifact_id", code)
             and _require(item.get("version_id"), "version_id", code)
