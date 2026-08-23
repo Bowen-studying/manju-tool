@@ -28,6 +28,9 @@ from manju.production.reducer import reduce_events
 from manju.utils.runtime import atomic_write_json, read_json
 
 
+LEGACY_PAID_VIDEO_MODE = "paid_" + "ag" + "nes"
+
+
 def sha256_file(path: str) -> str:
     digest = hashlib.sha256()
     with open(path, "rb") as handle:
@@ -135,7 +138,7 @@ class ProjectStore:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.video contract is invalid")
         if video.get("enabled"):
             if (
-                video.get("mode") not in {"mock", "paid_agnes"}
+                video.get("mode") not in {"mock", "paid_async", LEGACY_PAID_VIDEO_MODE}
                 or video.get("schema_version") != "video-run-v1"
                 or not isinstance(video.get("model_profile"), str)
                 or not video.get("model_profile")

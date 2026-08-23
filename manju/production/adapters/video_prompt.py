@@ -9,7 +9,7 @@ import os
 import stat
 from typing import Any
 
-from manju.pipeline.storyboard_schema import SCHEMA_VERSION, get_duration_seconds, normalize_storyboard
+from manju.pipeline.storyboard_schema import get_duration_seconds, normalize_storyboard
 from manju.production.adapters.base import StageResult
 from manju.production.artifacts import ArtifactRef
 from manju.production.models import (
@@ -30,6 +30,7 @@ from manju.utils.runtime import atomic_write_json, read_json
 
 VIDEO_PROMPT_SCHEMA_VERSION = "video-prompt-v1"
 VIDEO_PROMPT_RUN_SCHEMA_VERSION = "video-prompt-run-v1"
+SUPPORTED_STORYBOARD_SCHEMA_VERSIONS = {None, "1", "1.0", "2", "2.0"}
 
 
 def _hash_bytes(value: bytes) -> str:
@@ -185,7 +186,7 @@ def build_video_prompt(
     """Build one deterministic prompt record for every storyboard shot."""
     ref = _storyboard_ref(storyboard_ref)
     limits = _limits(settings)
-    if not isinstance(storyboard, dict) or storyboard.get("schema_version") != SCHEMA_VERSION:
+    if not isinstance(storyboard, dict) or storyboard.get("schema_version") not in SUPPORTED_STORYBOARD_SCHEMA_VERSIONS:
         raise ValueError("unsupported storyboard schema version")
     scenes = storyboard.get("scenes")
     if not isinstance(scenes, list) or any(not isinstance(scene, dict) for scene in scenes):

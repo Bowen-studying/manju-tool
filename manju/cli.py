@@ -179,6 +179,29 @@ def project_init(source, source_type, output_dir, engine, max_scenes, agent_max_
         _handle_production_error(exc, json_output=json_output)
 
 
+@project.command("import-legacy")
+@click.argument("legacy_storyboard", type=click.Path(exists=True, dir_okay=False))
+@click.option("-o", "--output-dir", type=click.Path(file_okay=False), required=True,
+              help="全新项目目录；已有文件或 project.json 时拒绝覆盖")
+@click.option("--voice-script", is_flag=True, help="导入后启用离线 voice_script 阶段")
+@click.option("--video-prompts", is_flag=True, help="导入后启用离线 video_prompt 阶段")
+@click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")
+def project_import_legacy(legacy_storyboard, output_dir, voice_script, video_prompts, json_output):
+    """显式导入一个旧 CLI storyboard JSON；不扫描旧目录、不调用 Agent。"""
+    from manju.production import ProductionError, import_legacy_storyboard
+
+    try:
+        snapshot = import_legacy_storyboard(
+            legacy_storyboard,
+            output_dir,
+            voice_script_enabled=voice_script,
+            video_prompt_enabled=video_prompts,
+        )
+        _echo_production_payload(snapshot, json_output=json_output)
+    except ProductionError as exc:
+        _handle_production_error(exc, json_output=json_output)
+
+
 @cli.command("run")
 @click.argument("project_json", type=click.Path(exists=True, dir_okay=False))
 @click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")

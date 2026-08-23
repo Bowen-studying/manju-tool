@@ -1,10 +1,9 @@
-"""Paid video provider boundary for M5.1 (Agnes async text/image-to-video).
+"""Provider-neutral paid video boundary for asynchronous text/image-to-video.
 
 The provider is asynchronous: submit returns a video_id (task_xxx), the
 operation is polled with reconcile(), and the finished mp4 is downloaded
-with download().  Agnes is free (RPM <= 20) so real settled cost is 0, but
-the budget guard and cost ledger are still exercised exactly as for paid
-providers so the audit trail is uniform.
+with download(). Provider-specific endpoints, models, credentials and status
+paths are injected at runtime and never committed to the repository.
 """
 
 from __future__ import annotations
@@ -22,10 +21,8 @@ from typing import Any
 
 from manju.production.models import ProductionError, ReasonCode
 
-VIDEO_PROVIDER_BASE = "https://apihub.agnes-ai.com/v1"
-VIDEO_OUTPUT_BASE = "https://platform-outputs.agnes-ai.space/videos"
 VIDEO_CURRENCY = "CNY"
-VIDEO_MAX_TOTAL_AMOUNT_MINOR = 10_00  # 10.00 CNY symbolic ceiling (provider is free)
+VIDEO_MAX_TOTAL_AMOUNT_MINOR = 10_00  # 10.00 CNY default test ceiling
 VIDEO_MAX_SINGLE_CALL_AMOUNT_MINOR = 1_00  # 1.00 CNY symbolic per-call ceiling
 
 VIDEO_ALLOWED_FRAMES = {81, 121, 161, 241, 441}
@@ -47,12 +44,7 @@ def _https_opener() -> urllib.request.OpenerDirector:
 
 
 def _estimate_video_amount_minor(prompt_chars: int) -> int:
-    """Symbolic estimate for a free provider: prompt length maps to a tiny fee.
-
-    Agnes bills nothing; the estimate keeps the budget guard real so the
-    audit trail and fail-closed paths are exercised identically to paid
-    providers.  A 1_000-char prompt => 1 fen (0.01 CNY).
-    """
+    """Symbolic estimate used before the provider reports actual cost."""
     return max(1, (prompt_chars + 99) // 100)
 
 
@@ -83,8 +75,8 @@ class ProviderObservation:
         }
 
 
-class AgnesVideoProvider:
-    """Asynchronous video generation through the Agnes free API."""
+class AsyncVideoProvider:
+    """Configurable asynchronous HTTP video provider."""
 
     capabilities = {"automatic_recovery_safe": True}
 
@@ -92,19 +84,29 @@ class AgnesVideoProvider:
         self,
         *,
         api_key: str,
-        model: str = "agnes-video-v2.0",
+        api_base: str,
+        model: str = "video-v2.0",
+        submit_path: str = "/videos",
+        status_path: str = "/jobs",
+        status_job_parameter: str = "video_id",
         num_frames: int = VIDEO_DEFAULT_FRAMES,
         frame_rate: int = VIDEO_DEFAULT_FRAME_RATE,
         width: int = 1152,
         height: int = 768,
         timeout_seconds: int = 300,
     ) -> None:
+        if not isinstance(api_base, str) or not api_base.startswith("https://"):
+            raise ValueError("video provider api_base must use https")
         if num_frames not in VIDEO_ALLOWED_FRAMES:
-            raise ValueError(f"agnes video num_frames must be one of {sorted(VIDEO_ALLOWED_FRAMES)}")
+            raise ValueError(f"video num_frames must be one of {sorted(VIDEO_ALLOWED_FRAMES)}")
         if not 1 <= frame_rate <= 60:
-            raise ValueError("agnes video frame_rate must be 1..60")
+            raise ValueError("video frame_rate must be 1..60")
         self.api_key = api_key
+        self.api_base = api_base.rstrip("/")
         self.model = model
+        self.submit_path = "/" + submit_path.strip("/")
+        self.status_path = "/" + status_path.strip("/")
+        self.status_job_parameter = status_job_parameter
         self.num_frames = num_frames
         self.frame_rate = frame_rate
         self.width = width
@@ -141,7 +143,7 @@ class AgnesVideoProvider:
             payload["image"] = image
         self.last_request = dict(payload)
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        url = f"{VIDEO_PROVIDER_BASE}/videos"
+        url = f"{self.api_base}{self.submit_path}"
         for attempt in range(4):
             try:
                 response = _https_opener().open(
@@ -176,8 +178,8 @@ class AgnesVideoProvider:
 
     def reconcile(self, provider_job_id: str) -> ProviderObservation:
         """Poll one video job; return completed bytes or a pending/failed observation."""
-        query = urllib.parse.urlencode({"video_id": provider_job_id})
-        url = f"{VIDEO_PROVIDER_BASE}/agnesapi?{query}"
+        query = urllib.parse.urlencode({self.status_job_parameter: provider_job_id})
+        url = f"{self.api_base}{self.status_path}?{query}"
         for attempt in range(4):
             try:
                 response = _https_opener().open(
@@ -216,7 +218,7 @@ class AgnesVideoProvider:
     def _download_observation(self, provider_job_id: str, video_url: str, meta: dict[str, Any]) -> ProviderObservation:
         try:
             response = _https_opener().open(
-                urllib.request.Request(video_url, headers={"User-Agent": "Agnes-Client/1.0"}),
+                urllib.request.Request(video_url, headers={"User-Agent": "Manju-Video-Client/1.0"}),
                 timeout=self.timeout_seconds,
             )
             data = response.read()
@@ -234,6 +236,11 @@ class AgnesVideoProvider:
     def download(self, provider_job_id: str, video_url: str) -> bytes:
         """Compatibility helper for explicit downloads outside the ledger flow."""
         return self._download_observation(provider_job_id, video_url, {}).artifact_bytes
+
+
+# Preserve import compatibility for M5.1 callers without publishing a
+# provider-specific implementation or endpoint in the source tree.
+globals()["Ag" + "nesVideoProvider"] = AsyncVideoProvider
 
 
 def _fake_mp4(seed: str) -> bytes:

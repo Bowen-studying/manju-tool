@@ -31,7 +31,7 @@ from tests.test_production_m4_0_voice_script import FixtureStoryboardAdapter
 KEY = b"m5-1-video-test-key"
 
 PAID_REQUEST = {
-    "model": "agnes-video-v2.0",
+    "model": "video-v2.0",
     "num_frames": 81,
     "frame_rate": 24,
     "response_format": "url",
@@ -48,7 +48,7 @@ def _service(tmp_path, provider: MockVideoProvider | None = None, **init_kwargs)
         video_prompt_enabled=True,
         video_enabled=True, video_mode="mock", video_model_profile="mock-video-v1",
         video_maximum_amount=str(VIDEO_MAX_TOTAL_AMOUNT_MINOR),
-        video_provider_profile="agnes-video",
+        video_provider_profile="async-video",
         video_provider_request=dict(PAID_REQUEST),
         hmac_key_id="test-key",
         **init_kwargs,
@@ -57,7 +57,7 @@ def _service(tmp_path, provider: MockVideoProvider | None = None, **init_kwargs)
         str(project / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         video_prompt_adapter=VideoPromptStageAdapter(),
         video_adapter=VideoStageAdapter(provider=provider, provider_request=dict(PAID_REQUEST),
-                                        provider_profile="agnes-video"),
+                                        provider_profile="async-video"),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
     )
     service._configured_model = lambda: "fixture"
@@ -198,7 +198,7 @@ def test_m51_crash_after_reserve_submits_exactly_once(tmp_path):
     service2 = ProductionService(
         str(tmp_path / "project" / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         video_prompt_adapter=VideoPromptStageAdapter(),
-        video_adapter=VSA(provider=provider, provider_request=dict(PAID_REQUEST), provider_profile="agnes-video"),
+        video_adapter=VSA(provider=provider, provider_request=dict(PAID_REQUEST), provider_profile="async-video"),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
     )
     service2._configured_model = lambda: "fixture"
@@ -249,7 +249,7 @@ def test_m51_crash_after_artifact_before_publish_reuses(tmp_path):
     service2 = ProductionService(
         str(tmp_path / "project" / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         video_prompt_adapter=VideoPromptStageAdapter(),
-        video_adapter=VideoStageAdapter(provider=provider2, provider_request=dict(PAID_REQUEST), provider_profile="agnes-video"),
+        video_adapter=VideoStageAdapter(provider=provider2, provider_request=dict(PAID_REQUEST), provider_profile="async-video"),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
     )
     service2._configured_model = lambda: "fixture"

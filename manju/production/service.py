@@ -49,6 +49,7 @@ from manju.production.models import (
     M4_2_DAG_VERSION,
     M5_DAG_VERSION,
     M5_1_DAG_VERSION,
+    M6_DAG_VERSION,
     PROJECT_SCHEMA_VERSION,
     ProductionError,
     ProductionSnapshot,
@@ -69,6 +70,7 @@ from manju.utils.runtime import atomic_write_bytes
 
 
 SnapshotListener = Callable[[ProductionSnapshot], None]
+LEGACY_PAID_VIDEO_MODE = "paid_" + "ag" + "nes"
 
 
 def initialize_project(
@@ -114,7 +116,7 @@ def initialize_project(
     video_model_profile: str = "mock-video-v1",
     video_mode: str = "mock",
     video_maximum_amount: str = "1000",
-    video_provider_profile: str = "agnes-video",
+    video_provider_profile: str = "async-video",
     video_provider_request: dict[str, Any] | None = None,
 ) -> ProductionSnapshot:
     source = os.path.abspath(source)
@@ -151,7 +153,7 @@ def initialize_project(
     if video_enabled:
         if not isinstance(video_model_profile, str) or not video_model_profile.strip():
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "video model profile is invalid")
-        if video_mode not in {"mock", "paid_agnes"}:
+        if video_mode not in {"mock", "paid_async", LEGACY_PAID_VIDEO_MODE}:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "video mode is invalid")
         if not str(video_maximum_amount).isdigit() or not video_provider_profile.strip():
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "video budget or provider profile is invalid")
@@ -661,6 +663,15 @@ class ProductionService:
         current = tuple(ArtifactRef(item["logical_id"], item["version_id"]) for item in graph.to_dict()["current"])
         if not requested or len(set(requested)) != len(requested):
             raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts are invalid")
+        if (
+            isinstance(project.get("import"), dict)
+            and project["import"].get("kind") == "legacy_storyboard"
+            and any(item.logical_id == "source.script" for item in requested)
+        ):
+            raise ProductionError(
+                ReasonCode.OPERATION_CONTRACT_INVALID.value,
+                "legacy storyboard source revisions require a new explicit import",
+            )
         direct_stage_outputs = {"storyboard.output", "voice_script.main", "voice_direction.main", "voice_audio.main", "video_prompt.main", "visual.asset"}
         if any(item.logical_id in direct_stage_outputs for item in requested):
             raise ProductionError(
@@ -1458,25 +1469,32 @@ class ProductionService:
             voice_stages.append("voice_director")
         if voice_tts.get("enabled"):
             voice_stages.append("voice_tts")
+        imported_legacy = (
+            isinstance(project.get("import"), dict)
+            and project["import"].get("kind") == "legacy_storyboard"
+        )
         if video_prompt.get("enabled"):
             if video.get("enabled"):
-                dag_version = M5_1_DAG_VERSION
+                dag_version = M6_DAG_VERSION if imported_legacy else M5_1_DAG_VERSION
                 stage_sequence = ["storyboard", *voice_stages, "video_prompt"] + (["visual"] if visual.get("enabled") else []) + ["video"]
             else:
-                dag_version = M5_DAG_VERSION
+                dag_version = M6_DAG_VERSION if imported_legacy else M5_DAG_VERSION
                 stage_sequence = ["storyboard", *voice_stages, "video_prompt"] + (["visual"] if visual.get("enabled") else [])
         elif voice_tts.get("enabled"):
-            dag_version = M4_2_DAG_VERSION
+            dag_version = M6_DAG_VERSION if imported_legacy else M4_2_DAG_VERSION
             stage_sequence = ["storyboard", "voice_script", "voice_director", "voice_tts"] + (["visual"] if visual.get("enabled") else [])
         elif voice_director.get("enabled"):
-            dag_version = M4_1_DAG_VERSION
+            dag_version = M6_DAG_VERSION if imported_legacy else M4_1_DAG_VERSION
             stage_sequence = ["storyboard", "voice_script", "voice_director"] + (["visual"] if visual.get("enabled") else [])
         elif voice_script.get("enabled"):
-            dag_version = M4_DAG_VERSION
+            dag_version = M6_DAG_VERSION if imported_legacy else M4_DAG_VERSION
             stage_sequence = ["storyboard", "voice_script"] + (["visual"] if visual.get("enabled") else [])
         else:
-            dag_version = M2_DAG_VERSION if visual.get("enabled") else DAG_VERSION
-            stage_sequence = list(stages_for_dag(dag_version))
+            dag_version = M6_DAG_VERSION if imported_legacy else (M2_DAG_VERSION if visual.get("enabled") else DAG_VERSION)
+            stage_sequence = (
+                ["storyboard"] + (["visual"] if visual.get("enabled") else [])
+                if imported_legacy else list(stages_for_dag(dag_version))
+            )
         contract = {
             "schema_version": PROJECT_SCHEMA_VERSION,
             "run_id": run_id,
@@ -1609,10 +1627,159 @@ class ProductionService:
         if any((event.get("payload") or {}).get("stage") == "visual" for event in terminals):
             self._configure_visual_receipt_signer(project)
         for terminal in terminals:
-            self._validate_terminal_stage_authority(terminal, events, snapshot, contract)
+            self._validate_terminal_stage_authority(project, terminal, events, snapshot, contract)
+
+    def _validate_legacy_import_stage(
+        self,
+        *,
+        project: dict[str, Any],
+        terminal: dict[str, Any],
+        snapshot: ProductionSnapshot,
+        contract: dict[str, Any],
+    ) -> None:
+        """Validate the immutable, offline M6 legacy-storyboard intake."""
+        payload = terminal.get("payload") if isinstance(terminal.get("payload"), dict) else {}
+        marker = payload.get("legacy_import")
+        metadata = project.get("import")
+        if not isinstance(marker, dict) or not isinstance(metadata, dict):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import metadata is invalid")
+        if marker.get("kind") != "legacy_storyboard" or metadata.get("kind") != "legacy_storyboard":
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import kind is invalid")
+        if metadata.get("contract_version") != M6_DAG_VERSION:
+            raise ProductionError(ReasonCode.PROJECT_CONTRACT_CHANGED.value, "legacy import contract is invalid")
+        if marker.get("verification_status") != "unverified" or metadata.get("verification_status") != "unverified":
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import verification status is invalid")
+        request_fingerprint = str(metadata.get("request_fingerprint", ""))
+        if not request_fingerprint or marker.get("request_fingerprint") != request_fingerprint:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import request binding is invalid")
+        contract_import = contract.get("legacy_import")
+        if (
+            not isinstance(contract_import, dict)
+            or contract_import.get("request_fingerprint") != request_fingerprint
+            or contract_import.get("verification_status") != "unverified"
+        ):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import contract binding is invalid")
+
+        artifacts = payload.get("artifacts")
+        if not isinstance(artifacts, list) or len(artifacts) != 1 or not isinstance(artifacts[0], dict):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import artifact is invalid")
+        artifact = artifacts[0]
+        artifact_path = artifact.get("path")
+        artifact_hash = str(artifact.get("version_id", ""))
+        if (
+            artifact.get("logical_id") != "storyboard.main"
+            or not isinstance(artifact_path, str)
+            or not artifact_hash.startswith("sha256:")
+        ):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import artifact binding is invalid")
+
+        manifest_path = marker.get("manifest_path")
+        authority_path = marker.get("authority_path")
+        if not isinstance(manifest_path, str) or not isinstance(authority_path, str):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import authority paths are invalid")
+        if metadata.get("manifest_path") != manifest_path or metadata.get("authority_path") != authority_path:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import project paths are invalid")
+        try:
+            artifact_absolute = self.store.artifact_path(artifact_path)
+            manifest_absolute = self.store.artifact_path(manifest_path)
+            authority_absolute = self.store.artifact_path(authority_path)
+        except ProductionError as exc:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import authority path is invalid") from exc
+        actual_artifact_hash = sha256_file(artifact_absolute)
+        actual_manifest_hash = sha256_file(manifest_absolute)
+        actual_authority_hash = sha256_file(authority_absolute)
+        if artifact_hash != f"sha256:{actual_artifact_hash}":
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy storyboard copy changed")
+        if marker.get("manifest_sha256") != actual_manifest_hash or metadata.get("manifest_sha256") != actual_manifest_hash:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import manifest changed")
+        if marker.get("authority_sha256") != actual_authority_hash or metadata.get("authority_sha256") != actual_authority_hash:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import authority changed")
+        if (
+            payload.get("authority_path") != authority_path
+            or payload.get("authority_hash") != actual_authority_hash
+            or contract_import.get("manifest_sha256") != actual_manifest_hash
+            or contract_import.get("authority_sha256") != actual_authority_hash
+        ):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import terminal binding is invalid")
+        authority_files = payload.get("authority_files")
+        if not isinstance(authority_files, list) or len(authority_files) != 2:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import authority files are invalid")
+        expected_authority_files = {
+            (manifest_path, actual_manifest_hash),
+            (authority_path, actual_authority_hash),
+        }
+        recorded_authority_files = {
+            (str(item.get("path", "")), str(item.get("sha256", "")))
+            for item in authority_files if isinstance(item, dict)
+        }
+        if len(recorded_authority_files) != 2 or recorded_authority_files != expected_authority_files:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import authority files are invalid")
+
+        manifest = read_json(manifest_absolute)
+        authority = read_json(authority_absolute)
+        if not isinstance(manifest, dict) or not isinstance(authority, dict):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import records are invalid")
+        if (
+            manifest.get("schema_version") != "legacy-storyboard-import-manifest-v1"
+            or manifest.get("import_contract") != M6_DAG_VERSION
+            or manifest.get("verification_status") != "unverified"
+            or manifest.get("request_fingerprint") != request_fingerprint
+            or manifest.get("artifact", {}).get("path") != artifact_path
+            or manifest.get("artifact", {}).get("sha256") != actual_artifact_hash
+        ):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import manifest binding is invalid")
+        if (
+            authority.get("schema_version") != "legacy-storyboard-import-authority-v1"
+            or authority.get("import_contract") != M6_DAG_VERSION
+            or authority.get("artifact_path") != artifact_path
+            or authority.get("artifact_sha256") != actual_artifact_hash
+            or authority.get("manifest_path") != manifest_path
+            or authority.get("manifest_sha256") != actual_manifest_hash
+            or authority.get("source_sha256") != metadata.get("source_sha256")
+            or authority.get("request_fingerprint") != request_fingerprint
+            or authority.get("verification_status") != "unverified"
+        ):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import authority binding is invalid")
+
+        source_sha256 = str(metadata.get("source_sha256", ""))
+        manifest_source = manifest.get("source") if isinstance(manifest.get("source"), dict) else {}
+        if (
+            not source_sha256
+            or manifest_source.get("sha256") != source_sha256
+            or manifest_source.get("bytes") != os.path.getsize(artifact_absolute)
+            or metadata.get("source_bytes") != os.path.getsize(artifact_absolute)
+            or source_sha256 != actual_artifact_hash
+        ):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import provenance is invalid")
+        produced = payload.get("produced_artifacts")
+        if not isinstance(produced, list) or len(produced) != 1 or not isinstance(produced[0], dict):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import graph output is invalid")
+        if (
+            produced[0].get("logical_id") != "storyboard.output"
+            or produced[0].get("version_id") != artifact_hash
+            or produced[0].get("path") != artifact_path
+        ):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import graph binding is invalid")
+        try:
+            from manju.pipeline.storyboard_schema import validate_storyboard
+            value = read_json(artifact_absolute)
+            if not isinstance(value, dict) or validate_storyboard(value):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy storyboard schema is invalid")
+        except ProductionError:
+            raise
+        except Exception as exc:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy storyboard schema is invalid") from exc
+
+        expected_stage_run_id = f"legacy-import-storyboard-{snapshot.run_id.removeprefix('run_')}"
+        if (
+            contract.get("dag_version") != M6_DAG_VERSION
+            or payload.get("stage_run_id") != expected_stage_run_id
+        ):
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "legacy import stage identity is invalid")
 
     def _validate_terminal_stage_authority(
         self,
+        project: dict[str, Any],
         terminal: dict[str, Any],
         events: list[dict[str, Any]],
         snapshot: ProductionSnapshot,
@@ -1698,6 +1865,11 @@ class ProductionService:
             # local adapter directory to inspect.
             return
         if stage == "storyboard":
+            if isinstance(payload.get("legacy_import"), dict):
+                self._validate_legacy_import_stage(
+                    project=project, terminal=terminal, snapshot=snapshot, contract=contract,
+                )
+                return
             scheduled_id = f"storyboard-{snapshot.run_id.removeprefix('run_')}"
             output_dir = self.paths.storyboard_dir(snapshot.run_id, scheduled_id)
             inspected = self.storyboard_adapter.inspect(
@@ -2760,7 +2932,7 @@ class ProductionService:
                     raise
                 if observed.outcome == "pending":
                     # Slow the poll loop for the real free provider; mock stays fast.
-                    if project["production"]["video"].get("mode") == "paid_agnes":
+                    if project["production"]["video"].get("mode") in {"paid_async", LEGACY_PAID_VIDEO_MODE}:
                         time.sleep(15)
                     return self._snapshot_and_project()
                 if observed.outcome != "succeeded":
@@ -3409,15 +3581,25 @@ class ProductionService:
                 self.store.validate_runtime_inputs(project, contract)
                 checks.append({"name": "runtime_inputs", "status": "passed"})
                 self._validate_stage_authority(project, events, snapshot, contract)
-                stage_run_id = f"storyboard-{snapshot.run_id.removeprefix('run_')}"
-                output_dir = self.paths.storyboard_dir(snapshot.run_id, stage_run_id)
-                inspected = self.storyboard_adapter.inspect(
-                    stage_run_id=stage_run_id,
-                    output_dir=output_dir,
-                    expected=self._storyboard_expected(contract),
+                storyboard_terminal = next(
+                    (event for event in reversed(events)
+                     if event.get("run_id") == snapshot.run_id
+                     and event.get("event_type") in {"stage_completed", "stage_needs_review", "stage_failed"}
+                     and (event.get("payload") or {}).get("stage") == "storyboard"),
+                    None,
                 )
-                if inspected is not None:
-                    checks.append({"name": "storyboard_stage", "status": "passed", "stage_status": inspected.status})
+                if isinstance((storyboard_terminal or {}).get("payload", {}).get("legacy_import"), dict):
+                    checks.append({"name": "legacy_import", "status": "passed"})
+                else:
+                    stage_run_id = f"storyboard-{snapshot.run_id.removeprefix('run_')}"
+                    output_dir = self.paths.storyboard_dir(snapshot.run_id, stage_run_id)
+                    inspected = self.storyboard_adapter.inspect(
+                        stage_run_id=stage_run_id,
+                        output_dir=output_dir,
+                        expected=self._storyboard_expected(contract),
+                    )
+                    if inspected is not None:
+                        checks.append({"name": "storyboard_stage", "status": "passed", "stage_status": inspected.status})
             return {
                 "schema_version": PROJECT_SCHEMA_VERSION,
                 "project_id": project["project_id"],

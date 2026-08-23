@@ -2114,7 +2114,17 @@ def _sync_public_trace(state: VisualAgentState) -> None:
         if os.path.isfile(private):
             with open(private, "rb") as source:
                 shutil.copyfileobj(source, target)
-    os.replace(temporary, public)
+    delay = 0.005
+    for attempt in range(8):
+        try:
+            os.replace(temporary, public)
+            break
+        except OSError as exc:
+            retryable = isinstance(exc, PermissionError) or getattr(exc, "winerror", None) in {5, 32}
+            if not retryable or attempt == 7:
+                raise
+            time.sleep(delay)
+            delay = min(0.05, delay * 2)
 
 
 def _activate_trace(state: VisualAgentState, *, reset_private: bool = False) -> None:

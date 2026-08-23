@@ -1,4 +1,4 @@
-"""Paid video generation stage adapter for M5.1 (Agnes async text/image-to-video).
+"""Provider-neutral paid video generation stage adapter for M5.1.
 
 Mirrors the voice-tts paid chain (approval -> grant -> reserve -> submit ->
 observe -> settle -> publish) but treats the provider as asynchronous: submit
@@ -125,7 +125,7 @@ class VideoStageAdapter:
     artifact_name = ARTIFACT_NAME
     receipt_name = RECEIPT_NAME
 
-    def __init__(self, provider, *, provider_profile: str = "agnes-video", provider_request: dict[str, Any] | None = None):
+    def __init__(self, provider, *, provider_profile: str = "async-video", provider_request: dict[str, Any] | None = None):
         self.provider = provider
         self.provider_profile = provider_profile
         self.provider_request = dict(provider_request or {})
@@ -156,7 +156,7 @@ class VideoStageAdapter:
         operation_id = "video-" + run_id.removeprefix("run_")
         provider_request = _public_provider_request(settings)
         provider_request["prompt"] = combined
-        provider_request["model"] = str(provider_request.get("model") or getattr(self.provider, "model", "agnes-video-v2.0"))
+        provider_request["model"] = str(provider_request.get("model") or getattr(self.provider, "model", "video-v2.0"))
         provider_request["num_frames"] = int(provider_request.get("num_frames") or getattr(self.provider, "num_frames", VIDEO_DEFAULT_FRAMES))
         provider_request["frame_rate"] = int(provider_request.get("frame_rate") or getattr(self.provider, "frame_rate", VIDEO_DEFAULT_FRAME_RATE))
         if image_material:

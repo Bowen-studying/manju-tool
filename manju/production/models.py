@@ -19,6 +19,7 @@ M4_1_DAG_VERSION = "production-m4.1-v1"
 M4_2_DAG_VERSION = "production-m4.2-v1"
 M5_DAG_VERSION = "production-m5.0-v1"
 M5_1_DAG_VERSION = "production-m5.1-v1"
+M6_DAG_VERSION = "production-m6.0-v1"
 M2_CONTRACT_VERSION = "1"
 
 # M5.0 is deliberately bounded before any storyboard bytes are interpreted.
@@ -94,6 +95,39 @@ def stages_for_dag(dag_version: str, declared: Any = None) -> tuple[str, ...]:
             ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "visual", "video"),
         }:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M5.1 stage sequence is invalid")
+        return candidate
+    elif dag_version == M6_DAG_VERSION:
+        # M6 is an imported-storyboard contract.  It keeps the M1-M5 stage
+        # order and adds no new runtime stage; the imported storyboard is
+        # already a completed first node in the run.
+        candidate = tuple(declared) if declared is not None else ()
+        if candidate not in {
+            ("storyboard",),
+            ("storyboard", "visual"),
+            ("storyboard", "voice_script"),
+            ("storyboard", "voice_script", "visual"),
+            ("storyboard", "voice_script", "video_prompt"),
+            ("storyboard", "voice_script", "video_prompt", "visual"),
+            ("storyboard", "voice_script", "voice_director"),
+            ("storyboard", "voice_script", "voice_director", "visual"),
+            ("storyboard", "voice_script", "voice_director", "video_prompt"),
+            ("storyboard", "voice_script", "voice_director", "video_prompt", "visual"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "visual"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "visual"),
+            ("storyboard", "video_prompt"),
+            ("storyboard", "video_prompt", "visual"),
+            ("storyboard", "video_prompt", "video"),
+            ("storyboard", "video_prompt", "visual", "video"),
+            ("storyboard", "voice_script", "video_prompt", "video"),
+            ("storyboard", "voice_script", "video_prompt", "visual", "video"),
+            ("storyboard", "voice_script", "voice_director", "video_prompt", "video"),
+            ("storyboard", "voice_script", "voice_director", "video_prompt", "visual", "video"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "video"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "visual", "video"),
+        }:
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M6.0 stage sequence is invalid")
         return candidate
     else:
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"unsupported dag: {dag_version}")

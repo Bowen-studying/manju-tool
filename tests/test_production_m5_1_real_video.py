@@ -1,7 +1,7 @@
-"""M5.1 real Agnes video acceptance (A/C/D against the live free API).
+"""M5.1 real asynchronous video acceptance against an operator endpoint.
 
-Requires AGNES_API_KEY in the environment.  Each test runs one short
-(81-frame, ~3.4s) video generation; the free provider bills nothing.
+Requires VIDEO_API_KEY and VIDEO_API_BASE in the environment. Each test runs
+one short video generation; endpoint details remain outside the repository.
 """
 
 from __future__ import annotations
@@ -18,18 +18,18 @@ from manju.production.adapters.video_prompt import VideoPromptStageAdapter
 from manju.production.models import ProductionError
 from manju.production.security import MappingHmacKeyProvider
 from manju.production.service import ProductionService, initialize_project
-from manju.production.video_providers import AgnesVideoProvider, VIDEO_CURRENCY, VIDEO_MAX_TOTAL_AMOUNT_MINOR
+from manju.production.video_providers import AsyncVideoProvider, VIDEO_CURRENCY, VIDEO_MAX_TOTAL_AMOUNT_MINOR
 from tests.test_production_m4_0_voice_script import FixtureStoryboardAdapter
 
 pytestmark = pytest.mark.skipif(
-    not os.environ.get("AGNES_API_KEY"),
-    reason="AGNES_API_KEY not set; real provider test skipped",
+    not (os.environ.get("VIDEO_API_KEY") and os.environ.get("VIDEO_API_BASE")),
+    reason="VIDEO_API_KEY or VIDEO_API_BASE not set; real provider test skipped",
 )
 
 KEY = b"m5-1-real-video-key"
 
 REAL_REQUEST = {
-    "model": "agnes-video-v2.0",
+    "model": os.environ.get("VIDEO_MODEL", "video-v2.0"),
     "num_frames": 81,
     "frame_rate": 24,
     "response_format": "url",
@@ -37,8 +37,13 @@ REAL_REQUEST = {
 
 
 def _real_provider():
-    return AgnesVideoProvider(
-        api_key=os.environ["AGNES_API_KEY"],
+    return AsyncVideoProvider(
+        api_key=os.environ["VIDEO_API_KEY"],
+        api_base=os.environ["VIDEO_API_BASE"],
+        submit_path=os.environ.get("VIDEO_SUBMIT_PATH", "/videos"),
+        status_path=os.environ.get("VIDEO_STATUS_PATH", "/jobs"),
+        status_job_parameter=os.environ.get("VIDEO_STATUS_JOB_PARAMETER", "video_id"),
+        model=os.environ.get("VIDEO_MODEL", "video-v2.0"),
         num_frames=81,
         frame_rate=24,
         timeout_seconds=300,
@@ -52,9 +57,9 @@ def _service(tmp_path):
     initialize_project(
         source=str(source), source_type="script", output_dir=str(project), engine="agent",
         video_prompt_enabled=True,
-        video_enabled=True, video_mode="paid_agnes", video_model_profile="agnes-video-v1",
+        video_enabled=True, video_mode="paid_async", video_model_profile="async-video-v1",
         video_maximum_amount=str(VIDEO_MAX_TOTAL_AMOUNT_MINOR),
-        video_provider_profile="agnes-video",
+        video_provider_profile="async-video",
         video_provider_request=dict(REAL_REQUEST),
         hmac_key_id="test-key",
     )
@@ -63,7 +68,7 @@ def _service(tmp_path):
         str(project / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         video_prompt_adapter=VideoPromptStageAdapter(),
         video_adapter=VideoStageAdapter(provider=provider, provider_request=dict(REAL_REQUEST),
-                                        provider_profile="agnes-video"),
+                                        provider_profile="async-video"),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
     )
     service._configured_model = lambda: "fixture"
@@ -139,7 +144,7 @@ def test_real_a_normal_call_produces_playable_video(tmp_path):
     assert settled["usage"]["actual_amount"] == "0"
     assert settled["usage"]["currency"] == VIDEO_CURRENCY
     assert settled["usage"]["cost_source"] == "provider_response"
-    assert "AGNES_API_KEY" not in json.dumps(events, ensure_ascii=False)
+    assert "VIDEO_API_KEY" not in json.dumps(events, ensure_ascii=False)
 
 
 def test_real_c_recovery_after_artifact_before_publish(tmp_path):
@@ -163,7 +168,7 @@ def test_real_c_recovery_after_artifact_before_publish(tmp_path):
         str(tmp_path / "project" / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         video_prompt_adapter=VideoPromptStageAdapter(),
         video_adapter=VideoStageAdapter(provider=provider2, provider_request=dict(REAL_REQUEST),
-                                        provider_profile="agnes-video"),
+                                        provider_profile="async-video"),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
     )
     service2._configured_model = lambda: "fixture"
