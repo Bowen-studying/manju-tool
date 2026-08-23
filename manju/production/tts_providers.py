@@ -154,6 +154,7 @@ class MockTtsProvider:
     calls: int = 0
     max_single_call_amount_minor: int = TTS_MAX_SINGLE_CALL_AMOUNT_MINOR
     fail_with: str | None = None
+    voices: list[str] = field(default_factory=list)
 
     def synthesize_cue(
         self, *, text: str, idempotency_key: str, request: dict[str, Any]
@@ -161,6 +162,7 @@ class MockTtsProvider:
         if self.fail_with is not None:
             raise ProductionError(self.fail_with, f"mock provider fails with {self.fail_with}")
         self.calls += 1
+        self.voices.append(str(request.get("voice", "")))
         amount = estimate_tts_amount_minor(len(text.encode("utf-8")))
         if amount > self.max_single_call_amount_minor:
             raise ProductionError(

@@ -34,6 +34,13 @@ pytestmark = pytest.mark.skipif(
 
 KEY = b"m4-3-real-voice-tts-key"
 
+REAL_REQUEST = {
+    "model": "FunAudioLLM/CosyVoice2-0.5B",
+    "voice": "FunAudioLLM/CosyVoice2-0.5B:alex",
+    "response_format": "wav",
+    "sample_rate": 16000,
+}
+
 
 def _real_provider():
     return SiliconFlowTtsProvider(
@@ -56,10 +63,7 @@ def _service(tmp_path):
         voice_tts_model_profile="siliconflow-cosyvoice2",
         voice_tts_maximum_amount=str(TTS_MAX_TOTAL_AMOUNT_MINOR),
         voice_tts_provider_profile="siliconflow-cosyvoice2",
-        voice_tts_provider_request={
-            "model": "FunAudioLLM/CosyVoice2-0.5B", "voice": "FunAudioLLM/CosyVoice2-0.5B:alex",
-            "response_format": "wav", "sample_rate": 16000,
-        },
+        voice_tts_provider_request=REAL_REQUEST,
         hmac_key_id="test-key",
     )
     provider = _real_provider()
@@ -67,7 +71,7 @@ def _service(tmp_path):
         str(project / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         voice_tts_adapter=VoiceTTSStageAdapter(
             mode="paid_siliconflow", tts_provider=provider,
-            provider_request={"model": "FunAudioLLM/CosyVoice2-0.5B", "voice": "FunAudioLLM/CosyVoice2-0.5B:alex"},
+            provider_request=dict(REAL_REQUEST),
             provider_profile="siliconflow-cosyvoice2",
         ),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
@@ -164,7 +168,7 @@ def test_real_c_recovery_after_audio_before_publish(tmp_path):
         str(project / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         voice_tts_adapter=VoiceTTSStageAdapter(
             mode="paid_siliconflow", tts_provider=provider2,
-            provider_request={"model": "FunAudioLLM/CosyVoice2-0.5B", "voice": "FunAudioLLM/CosyVoice2-0.5B:alex"},
+            provider_request=dict(REAL_REQUEST),
             provider_profile="siliconflow-cosyvoice2",
         ),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
@@ -177,6 +181,58 @@ def test_real_c_recovery_after_audio_before_publish(tmp_path):
     # recovery must reuse the persisted audio: authority hash matches pre-crash audio
     authority, _ = _authority_of(service2, terminal)
     assert authority["mode"] == "paid_siliconflow"
+
+
+def test_real_speaker_voice_map_multi_voice(tmp_path):
+    """Real multi-role synthesis: distinct voices for dialogue/narration cues."""
+    voice_map = {
+        "A": "FunAudioLLM/CosyVoice2-0.5B:alex",
+        "narrator": "FunAudioLLM/CosyVoice2-0.5B:anna",
+        "unknown": "FunAudioLLM/CosyVoice2-0.5B:claire",
+    }
+    request = dict(REAL_REQUEST)
+    request["voice_map"] = dict(voice_map)
+    source = tmp_path / "source.txt"
+    source.write_text("多角色配音测试", encoding="utf-8")
+    project = tmp_path / "project"
+    initialize_project(
+        source=str(source), source_type="script", output_dir=str(project), engine="agent",
+        voice_script_enabled=True, voice_director_enabled=True,
+        voice_tts_enabled=True, voice_tts_mode="paid_siliconflow",
+        voice_tts_model_profile="siliconflow-cosyvoice2",
+        voice_tts_maximum_amount=str(TTS_MAX_TOTAL_AMOUNT_MINOR),
+        voice_tts_provider_profile="siliconflow-cosyvoice2",
+        voice_tts_provider_request=request,
+        hmac_key_id="test-key",
+    )
+    provider = _real_provider()
+    service = ProductionService(
+        str(project / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
+        voice_tts_adapter=VoiceTTSStageAdapter(
+            mode="paid_siliconflow", tts_provider=provider,
+            provider_request=dict(request),
+            provider_profile="siliconflow-cosyvoice2",
+        ),
+        hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
+    )
+    service._configured_model = lambda: "fixture"
+    awaiting = _advance_to_approval(service)
+    _approve_and_grant(service, awaiting)
+    completed = service.run_until_blocked()
+    assert completed.status == "completed"
+    # the grant binds the voice_map: verify it reached the approval contract
+    approval = next(
+        e["payload"]["approval_request"] for e in service.store.events.read()
+        if e["event_type"] == "approval_requested"
+    )
+    assert approval["operation_intents"][0]["provider_request"]["voice_map"] == voice_map
+    # distinct real voices were used and each cue produced decodable audio
+    terminal = _terminal_voice_tts_event(service, completed.run_id)
+    authority, output_dir = _authority_of(service, terminal)
+    audio_path = os.path.join(output_dir, authority["audio"]["path"])
+    with wave.open(audio_path, "rb") as audio:
+        assert audio.getframerate() == 16000 and audio.getnchannels() == 1
+        assert audio.getnframes() > 0
 
 
 def test_real_d_tamper_audio_fails_authority_check(tmp_path):

@@ -30,12 +30,22 @@ from tests.test_production_m4_0_voice_script import FixtureStoryboardAdapter
 
 KEY = b"m4-3-paid-voice-tts-test-key"
 
+PAID_REQUEST = {
+    "model": "FunAudioLLM/CosyVoice2-0.5B",
+    "voice": "v-test",
+    "response_format": "wav",
+    "sample_rate": 16000,
+}
 
-def _service(tmp_path, provider: MockTtsProvider | None = None, **init_kwargs):
+
+def _service(tmp_path, provider: MockTtsProvider | None = None, *, voice_map=None, **init_kwargs):
     source = tmp_path / "source.txt"
     source.write_text("付费配音测试", encoding="utf-8")
     project = tmp_path / "project"
     provider = provider or MockTtsProvider()
+    paid_request = dict(PAID_REQUEST)
+    if voice_map:
+        paid_request["voice_map"] = dict(voice_map)
     initialize_project(
         source=str(source), source_type="script", output_dir=str(project), engine="agent",
         voice_script_enabled=True, voice_director_enabled=True,
@@ -44,14 +54,14 @@ def _service(tmp_path, provider: MockTtsProvider | None = None, **init_kwargs):
         voice_tts_model_profile="siliconflow-cosyvoice2",
         voice_tts_maximum_amount=str(TTS_MAX_TOTAL_AMOUNT_MINOR),
         voice_tts_provider_profile="siliconflow-cosyvoice2",
-        voice_tts_provider_request={"model": "FunAudioLLM/CosyVoice2-0.5B", "voice": "v-test", "response_format": "wav", "sample_rate": 16000},
+        voice_tts_provider_request=paid_request,
         hmac_key_id="test-key",
         **init_kwargs,
     )
     service = ProductionService(
         str(project / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         voice_tts_adapter=VoiceTTSStageAdapter(mode="paid_siliconflow", tts_provider=provider,
-                                               provider_request={"model": "FunAudioLLM/CosyVoice2-0.5B", "voice": "v-test"},
+                                               provider_request=paid_request,
                                                provider_profile="siliconflow-cosyvoice2"),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
     )
@@ -284,12 +294,109 @@ def test_m43_settled_reentry_is_idempotent(tmp_path):
     assert provider.calls == calls_before
 
 
-def _service_fresh_restart(tmp_path, provider):
+def test_m43_speaker_voice_map_applies_distinct_voices(tmp_path):
+    voice_map = {"A": "voice-A-male", "narrator": "voice-N-female", "unknown": "voice-U-fallback"}
+    service, provider = _service(tmp_path, voice_map=voice_map)
+    awaiting = _advance_to_approval(service)
+    _approve_and_grant(service, awaiting)
+    completed = service.run_until_blocked()
+    assert completed.status == "completed"
+    assert len(provider.voices) == len(set(provider.voices)) == 3
+    assert provider.voices == ["voice-A-male", "voice-N-female", "voice-U-fallback"]
+
+
+def test_m43_voice_drift_fails_closed(tmp_path):
+    service, provider = _service(tmp_path)
+    awaiting = _advance_to_approval(service)
+    _approve_and_grant(service, awaiting)
+    service.advance()  # call_reserved
+    # process restart with a drifted voice in the adapter (not matching the signed grant)
+    drift_request = dict(PAID_REQUEST)
+    drift_request["voice"] = "drifted-voice"
     project = tmp_path / "project"
+    drifted = ProductionService(
+        str(project / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
+        voice_tts_adapter=VoiceTTSStageAdapter(mode="paid_siliconflow", tts_provider=provider,
+                                               provider_request=drift_request,
+                                               provider_profile="siliconflow-cosyvoice2"),
+        hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
+    )
+    drifted._configured_model = lambda: "fixture"
+    blocked = drifted.run_until_blocked()
+    assert provider.calls == 0
+    assert blocked.status == "failed"
+    events = drifted.store.events.read()
+    failed_settle = next(
+        e for e in events
+        if e["event_type"] == "call_settled" and (e.get("payload") or {}).get("operation", {}).get("outcome") == "failed"
+    )
+    assert failed_settle["payload"]["operation"]["usage"]["actual_amount"] == "0"
+
+
+def test_m43_tamper_receipt_fails_authority_check(tmp_path):
+    service, provider = _service(tmp_path)
+    awaiting = _advance_to_approval(service)
+    _approve_and_grant(service, awaiting)
+    completed = service.run_until_blocked()
+    assert completed.status == "completed"
+    terminal = _terminal_voice_tts_event(service, completed.run_id)
+    authority, output_dir = _authority_of(service, terminal)
+    receipt_path = os.path.join(output_dir, authority["receipt"]["path"])
+    receipt = json.loads(open(receipt_path, encoding="utf-8").read())
+    receipt["output"]["sha256"] = "0" * 64
+    with open(receipt_path, "w", encoding="utf-8") as handle:
+        json.dump(receipt, handle, ensure_ascii=False)
+    from manju.production.models import ProductionError
+    with pytest.raises(ProductionError):
+        service.advance()
+
+
+def test_m43_tamper_authority_fails_authority_check(tmp_path):
+    service, provider = _service(tmp_path)
+    awaiting = _advance_to_approval(service)
+    _approve_and_grant(service, awaiting)
+    completed = service.run_until_blocked()
+    assert completed.status == "completed"
+    terminal = _terminal_voice_tts_event(service, completed.run_id)
+    authority, output_dir = _authority_of(service, terminal)
+    authority_path = os.path.join(output_dir, "voice_tts_run.json")
+    authority["audio"]["sha256"] = "f" * 64
+    with open(authority_path, "w", encoding="utf-8") as handle:
+        json.dump(authority, handle, ensure_ascii=False)
+    from manju.production.models import ProductionError
+    with pytest.raises(ProductionError):
+        service.advance()
+
+
+def test_m43_replayed_reserve_event_is_rejected(tmp_path):
+    service, provider = _service(tmp_path)
+    awaiting = _advance_to_approval(service)
+    _approve_and_grant(service, awaiting)
+    completed = service.run_until_blocked()
+    assert completed.status == "completed"
+    # replay an old call_reserved event: reducer must reject the duplicate
+    reserved = next(
+        e for e in service.store.events.read()
+        if e["event_type"] == "call_reserved"
+    )
+    from manju.production.models import ProductionError
+    service.store.events.append(
+        "call_reserved", project_id=reserved["project_id"], run_id=reserved["run_id"],
+        payload=reserved["payload"],
+    )
+    with pytest.raises(ProductionError):
+        service.store.snapshot()
+
+
+def _service_fresh_restart(tmp_path, provider, *, voice_map=None):
+    project = tmp_path / "project"
+    paid_request = dict(PAID_REQUEST)
+    if voice_map:
+        paid_request["voice_map"] = dict(voice_map)
     service = ProductionService(
         str(project / "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         voice_tts_adapter=VoiceTTSStageAdapter(mode="paid_siliconflow", tts_provider=provider,
-                                               provider_request={"model": "FunAudioLLM/CosyVoice2-0.5B", "voice": "v-test"},
+                                               provider_request=paid_request,
                                                provider_profile="siliconflow-cosyvoice2"),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
     )

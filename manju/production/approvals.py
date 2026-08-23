@@ -13,8 +13,20 @@ from manju.production.models import M2_CONTRACT_VERSION, ProductionError, Reason
 
 
 _PUBLIC_PROVIDER_REQUEST_FIELDS = frozenset(
-    {"prompt", "model", "size", "quality", "n", "response_format", "voice", "sample_rate"}
+    {"prompt", "model", "size", "quality", "n", "response_format", "voice", "sample_rate", "voice_map"}
 )
+
+
+def _public_provider_request_value(key: str, value: Any) -> bool:
+    """Allow scalar controls plus the voice_map (speaker -> voice id) table."""
+    if isinstance(value, (str, int)):
+        return True
+    if key == "voice_map" and isinstance(value, dict) and value:
+        return all(
+            isinstance(speaker, str) and isinstance(voice, str) and voice
+            for speaker, voice in value.items()
+        )
+    return False
 
 
 def _provider_request_binding(intent: dict[str, Any], code: ReasonCode) -> dict[str, Any]:
@@ -24,7 +36,7 @@ def _provider_request_binding(intent: dict[str, Any], code: ReasonCode) -> dict[
     request_fingerprint = intent.get("provider_request_fingerprint")
     if (
         not isinstance(request, dict) or not request or set(request) - _PUBLIC_PROVIDER_REQUEST_FIELDS
-        or not all(isinstance(key, str) and isinstance(value, (str, int)) for key, value in request.items())
+        or not all(isinstance(key, str) and _public_provider_request_value(key, value) for key, value in request.items())
         or not isinstance(request_fingerprint, str)
     ):
         raise ProductionError(code.value, "provider request binding is invalid")

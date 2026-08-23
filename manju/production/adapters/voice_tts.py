@@ -100,6 +100,17 @@ class _ProviderBackedTtsModel:
         )
         self.total_ceiling_minor = TTS_MAX_TOTAL_AMOUNT_MINOR
         self._results: dict[str, bytes] = {}
+        voice_map = request.get("voice_map")
+        self.voice_map = dict(voice_map) if isinstance(voice_map, dict) else {}
+
+    def _cue_voice(self, item: dict[str, Any]) -> str | None:
+        speaker = str(item.get("speaker", ""))
+        if speaker in self.voice_map:
+            return str(self.voice_map[speaker])
+        kind = str(item.get("kind", ""))
+        if kind in self.voice_map:
+            return str(self.voice_map[kind])
+        return None
 
     def _estimate_entries(self, entries: list[dict[str, Any]]) -> int:
         total = 0
@@ -129,7 +140,11 @@ class _ProviderBackedTtsModel:
                 )
             self.calls += 1
             cue_key = f"{idempotency_key}:{item['sequence']}"
-            audio = self.provider.synthesize_cue(text=text, idempotency_key=cue_key, request=self.request)
+            cue_request = dict(self.request)
+            cue_voice = self._cue_voice(item)
+            if cue_voice:
+                cue_request["voice"] = cue_voice
+            audio = self.provider.synthesize_cue(text=text, idempotency_key=cue_key, request=cue_request)
             if not isinstance(audio, bytes) or len(audio) <= 44:
                 raise ValueError("TTS provider returned invalid audio")
             duration_ms = max(100, int(round(float(item.get("shot_duration_seconds", 0)) * 1000)))
@@ -545,7 +560,7 @@ class VoiceTTSStageAdapter:
 
     def _public_provider_request(self, settings: dict[str, Any]) -> dict[str, Any]:
         """Only public generation controls enter the approval contract."""
-        allowed = {"model", "voice", "response_format", "sample_rate"}
+        allowed = {"model", "voice", "response_format", "sample_rate", "voice_map"}
         request = {}
         for key in allowed:
             value = settings.get("provider_request", {}).get(key) if isinstance(settings.get("provider_request"), dict) else None
@@ -622,7 +637,21 @@ class VoiceTTSStageAdapter:
         The durable call receipt guarantees that an interrupted paid call is
         never blindly re-submitted: a reserved receipt on a synchronous provider
         raises, so the caller must settle the operation as outcome-unknown.
+        Provider controls must exactly match the signed grant binding; any
+        voice/model drift fails closed before a provider side effect.
         """
+        bound_request = operation.get("provider_request")
+        if not isinstance(bound_request, dict):
+            raise ProductionError(
+                ReasonCode.GRANT_CONTRACT_INVALID.value,
+                "voice-tts grant binding lacks a provider request",
+            )
+        current_request = self._public_provider_request({"provider_request": self.provider_request})
+        if current_request != bound_request:
+            raise ProductionError(
+                ReasonCode.GRANT_CONTRACT_INVALID.value,
+                "voice-tts provider controls drift from the signed grant",
+            )
         entries = self._load_entries(voice_direction_path=voice_direction_path, voice_direction_ref=voice_direction_ref)
         os.makedirs(output_dir, exist_ok=True)
         try:
