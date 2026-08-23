@@ -9,6 +9,7 @@ import json
 import mimetypes
 import os
 import shutil
+import stat
 import uuid
 from collections.abc import Callable
 from datetime import datetime, timezone
@@ -24,6 +25,7 @@ from manju.production.adapters.visual import VisualStageAdapter
 from manju.production.adapters.voice_script import VoiceScriptStageAdapter
 from manju.production.adapters.voice_director import VoiceDirectorStageAdapter
 from manju.production.adapters.voice_tts import VoiceTTSStageAdapter
+from manju.production.adapters.video_prompt import VideoPromptStageAdapter
 from manju.production.adapters.base import StageResult
 from manju.production.approvals import ApprovalRequest, Grant, contractual_tariff_usage, create_contractual_tariff
 from manju.production.artifacts import ArtifactGraph, ArtifactRecord, ArtifactRef
@@ -43,6 +45,7 @@ from manju.production.models import (
     M4_DAG_VERSION,
     M4_1_DAG_VERSION,
     M4_2_DAG_VERSION,
+    M5_DAG_VERSION,
     PROJECT_SCHEMA_VERSION,
     ProductionError,
     ProductionSnapshot,
@@ -95,6 +98,14 @@ def initialize_project(
     voice_tts_maximum_amount: str = "1000",
     voice_tts_provider_profile: str = "siliconflow-cosyvoice2",
     voice_tts_provider_request: dict[str, Any] | None = None,
+    video_prompt_enabled: bool = False,
+    video_prompt_max_input_bytes: int = 4 * 1024 * 1024,
+    video_prompt_max_output_bytes: int = 8 * 1024 * 1024,
+    video_prompt_max_shots: int = 512,
+    video_prompt_max_text_chars: int = 4096,
+    video_prompt_max_prompt_chars: int = 8192,
+    video_prompt_max_duration_seconds: float = 600.0,
+    video_prompt_max_total_duration_seconds: float = 3600.0,
 ) -> ProductionSnapshot:
     source = os.path.abspath(source)
     if source_type not in {"novel", "script", "storyboard"}:
@@ -127,6 +138,21 @@ def initialize_project(
         or int(visual_contractual_tariff_amount) > int(visual_maximum_amount)
     ):
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "visual contractual tariff is invalid")
+    video_prompt_limits = {
+        "max_input_bytes": video_prompt_max_input_bytes,
+        "max_output_bytes": video_prompt_max_output_bytes,
+        "max_shots": video_prompt_max_shots,
+        "max_text_chars": video_prompt_max_text_chars,
+        "max_prompt_chars": video_prompt_max_prompt_chars,
+        "max_duration_seconds": video_prompt_max_duration_seconds,
+        "max_total_duration_seconds": video_prompt_max_total_duration_seconds,
+    }
+    if video_prompt_enabled:
+        from manju.production.adapters.video_prompt import _limits as _video_prompt_limits
+        try:
+            _video_prompt_limits(video_prompt_limits)
+        except (TypeError, ValueError) as exc:
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "video-prompt resource limits are invalid") from exc
     if not os.path.isfile(source):
         raise ProductionError(ReasonCode.SOURCE_MISSING.value, f"源文件不存在: {source}")
 
@@ -201,6 +227,12 @@ def initialize_project(
                 "provider_profile": voice_tts_provider_profile if voice_tts_enabled and voice_tts_mode == "paid_siliconflow" else "",
                 "provider_request": voice_tts_provider_request if voice_tts_enabled and voice_tts_mode == "paid_siliconflow" else None,
             },
+            "video_prompt": {
+                "enabled": video_prompt_enabled,
+                "mode": "deterministic_offline" if video_prompt_enabled else "",
+                "schema_version": "video-prompt-v1" if video_prompt_enabled else "",
+                **video_prompt_limits,
+            },
             "voice": {"enabled": False},
             "video": {"enabled": False},
         },
@@ -258,6 +290,7 @@ class ProductionService:
         voice_script_adapter: VoiceScriptStageAdapter | None = None,
         voice_director_adapter: VoiceDirectorStageAdapter | None = None,
         voice_tts_adapter: VoiceTTSStageAdapter | None = None,
+        video_prompt_adapter: VideoPromptStageAdapter | None = None,
         hmac_key_provider: HmacKeyProvider | None = None,
         listeners: tuple[SnapshotListener, ...] = (),
     ):
@@ -272,6 +305,10 @@ class ProductionService:
         if type(candidate_voice_tts) is not VoiceTTSStageAdapter:
             raise TypeError("M4.2 offline TTS accepts only VoiceTTSStageAdapter")
         self.voice_tts_adapter = candidate_voice_tts
+        candidate_video_prompt = video_prompt_adapter or VideoPromptStageAdapter()
+        if type(candidate_video_prompt) is not VideoPromptStageAdapter:
+            raise TypeError("M5.0 offline video prompts accept only VideoPromptStageAdapter")
+        self.video_prompt_adapter = candidate_video_prompt
         self.scheduler = ProductionScheduler()
         self.listeners = listeners
 
@@ -472,10 +509,9 @@ class ProductionService:
         if expected_hash and actual_hash != expected_hash:
             raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
                                   f"runtime input is missing or changed: {logical_id}")
-        private_path = os.path.join(output_dir, ".runtime_inputs",
-                                    f"{safe_filename(logical_id)}-{actual_hash}.bin")
-        atomic_write_bytes(private_path, content)
-        return private_path
+        return self._write_stage_private_copy(
+            output_dir=output_dir, logical_id=logical_id, content_hash=actual_hash, content=content,
+        )
 
     def _stage_private_artifact(self, *, path: str, version_id: str, logical_id: str, output_dir: str) -> str:
         """Verify an upstream artifact once, then bind the adapter to a private copy."""
@@ -493,10 +529,80 @@ class ProductionService:
         if actual_hash != version_id.removeprefix("sha256:"):
             raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
                                   f"stage artifact is missing or changed: {logical_id}")
-        private_path = os.path.join(output_dir, ".runtime_inputs",
-                                    f"{safe_filename(logical_id)}-{actual_hash}.bin")
+        return self._write_stage_private_copy(
+            output_dir=output_dir, logical_id=logical_id, content_hash=actual_hash, content=content,
+        )
+
+    def _write_stage_private_copy(
+        self, *, output_dir: str, logical_id: str, content_hash: str, content: bytes,
+    ) -> str:
+        """Publish a verified stage input without traversing links or reparse points."""
+        root = os.path.abspath(self.paths.root)
+        runtime_dir = os.path.abspath(os.path.join(output_dir, ".runtime_inputs"))
+        normalized_root = os.path.normcase(root)
+        normalized_runtime = os.path.normcase(runtime_dir)
+        try:
+            inside_root = os.path.commonpath([normalized_root, normalized_runtime]) == normalized_root
+        except ValueError:
+            inside_root = False
+        if not inside_root or normalized_runtime == normalized_root:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  "stage private-input directory is invalid")
+
+        relative_dir = os.path.relpath(runtime_dir, root)
+        current = root
+        for part in relative_dir.replace("\\", "/").split("/"):
+            if not part or part in {".", ".."}:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      "stage private-input directory is invalid")
+            current = os.path.join(current, part)
+            if not os.path.lexists(current):
+                try:
+                    os.mkdir(current)
+                except FileExistsError:
+                    pass
+                except OSError as exc:
+                    raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                          "stage private-input directory is unavailable") from exc
+            try:
+                value = os.lstat(current)
+            except OSError as exc:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      "stage private-input directory is unavailable") from exc
+            attributes = getattr(value, "st_file_attributes", 0)
+            is_reparse = bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+            if stat.S_ISLNK(value.st_mode) or is_reparse or not stat.S_ISDIR(value.st_mode):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      "stage private-input directory cannot contain links")
+
+        real_root = os.path.normcase(os.path.realpath(root))
+        real_runtime = os.path.normcase(os.path.realpath(runtime_dir))
+        try:
+            inside_real_root = os.path.commonpath([real_root, real_runtime]) == real_root
+        except ValueError:
+            inside_real_root = False
+        if not inside_real_root:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  "stage private-input directory is invalid")
+
+        private_path = os.path.join(
+            runtime_dir, f"{safe_filename(logical_id)}-{content_hash}.bin",
+        )
+        if os.path.lexists(private_path):
+            value = os.lstat(private_path)
+            attributes = getattr(value, "st_file_attributes", 0)
+            if (stat.S_ISLNK(value.st_mode)
+                    or bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+                    or not stat.S_ISREG(value.st_mode)):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                      "stage private-input file is invalid")
         atomic_write_bytes(private_path, content)
-        return private_path
+        relative_path = os.path.relpath(private_path, root)
+        verified_path = self.store.artifact_path(relative_path)
+        if sha256_file(verified_path) != content_hash:
+            raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                                  "stage private-input file failed verification")
+        return verified_path
 
     def _relative_artifact_path(self, path: str) -> str:
         """Normalize adapter output paths against the project, never the process CWD."""
@@ -526,7 +632,7 @@ class ProductionService:
         current = tuple(ArtifactRef(item["logical_id"], item["version_id"]) for item in graph.to_dict()["current"])
         if not requested or len(set(requested)) != len(requested):
             raise ProductionError(ReasonCode.OPERATION_CONTRACT_INVALID.value, "revision changed artifacts are invalid")
-        direct_stage_outputs = {"storyboard.output", "voice_script.main", "voice_direction.main", "voice_audio.main", "visual.asset"}
+        direct_stage_outputs = {"storyboard.output", "voice_script.main", "voice_direction.main", "voice_audio.main", "video_prompt.main", "visual.asset"}
         if any(item.logical_id in direct_stage_outputs for item in requested):
             raise ProductionError(
                 ReasonCode.OPERATION_CONTRACT_INVALID.value,
@@ -538,6 +644,7 @@ class ProductionService:
             voice_script_enabled = project.get("production", {}).get("voice_script", {}).get("enabled")
             voice_director_enabled = project.get("production", {}).get("voice_director", {}).get("enabled")
             voice_tts_enabled = project.get("production", {}).get("voice_tts", {}).get("enabled")
+            video_prompt_enabled = project.get("production", {}).get("video_prompt", {}).get("enabled", False)
             visual_enabled = project.get("production", {}).get("visual", {}).get("enabled")
             configured_stages = ["storyboard"]
             if voice_script_enabled:
@@ -546,6 +653,8 @@ class ProductionService:
                 configured_stages.append("voice_director")
             if voice_tts_enabled:
                 configured_stages.append("voice_tts")
+            if video_prompt_enabled:
+                configured_stages.append("video_prompt")
             if visual_enabled:
                 configured_stages.append("visual")
             configured_stages = tuple(configured_stages)
@@ -600,9 +709,10 @@ class ProductionService:
                     or (stage == "storyboard" and "source.script" in changed_ids)
                     or (stage == "visual" and bool({"source.script", "style.reference"} & changed_ids))
                     or (stage == "voice_script" and "source.script" in changed_ids)
-                    or (stage == "voice_director" and bool({"source.script", "voice_director.policy"} & changed_ids))
-                    or (stage == "voice_tts" and bool({"source.script", "voice_director.policy"} & changed_ids))
-                ) else "reuse",
+                     or (stage == "voice_director" and bool({"source.script", "voice_director.policy"} & changed_ids))
+                     or (stage == "voice_tts" and bool({"source.script", "voice_director.policy"} & changed_ids))
+                     or (stage == "video_prompt" and "source.script" in changed_ids)
+                 ) else "reuse",
                 "artifact_versions": [ref.to_dict() for ref, record in sorted(graph._records.items())
                                       if record.producer_stage == stage and ref not in affected_set],
             }
@@ -704,6 +814,19 @@ class ProductionService:
                 raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-tts voice-direction graph output is absent")
             dependencies.append(ArtifactRef.from_dict(director_outputs[0]).to_dict())
             logical_id = "voice_audio.main"
+        elif stage == "video_prompt":
+            storyboard_event = next(
+                (event for event in reversed(events) if event.get("run_id") == run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "storyboard"),
+                None,
+            )
+            storyboard_payload = ((storyboard_event or {}).get("payload") or {})
+            storyboard_outputs = storyboard_payload.get("produced_artifacts") or storyboard_payload.get("reused_artifacts") or []
+            if len(storyboard_outputs) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "video-prompt storyboard graph output is absent")
+            dependencies.append(ArtifactRef.from_dict(storyboard_outputs[0]).to_dict())
+            logical_id = "video_prompt.main"
         else:
             raise ProductionError(ReasonCode.INTERNAL_ERROR.value, f"unknown output stage: {stage}")
         record = ArtifactRecord.from_dict({
@@ -1263,6 +1386,7 @@ class ProductionService:
         voice_script = project["production"].get("voice_script", {"enabled": False})
         voice_director = project["production"].get("voice_director", {"enabled": False})
         voice_tts = project["production"].get("voice_tts", {"enabled": False})
+        video_prompt = project["production"].get("video_prompt", {"enabled": False})
         if voice_tts.get("enabled"):
             configured_profile = voice_tts.get("model_profile")
             adapter_profile = self.voice_tts_adapter.model_profile
@@ -1283,7 +1407,17 @@ class ProductionService:
             # call-receipt state machine and never blindly re-submits.
         runtime_inputs = self._runtime_inputs(project, run_id, successor_selection)
         source_input = runtime_inputs["source.script"]
+        voice_stages: list[str] = []
+        if voice_script.get("enabled"):
+            voice_stages.append("voice_script")
+        if voice_director.get("enabled"):
+            voice_stages.append("voice_director")
         if voice_tts.get("enabled"):
+            voice_stages.append("voice_tts")
+        if video_prompt.get("enabled"):
+            dag_version = M5_DAG_VERSION
+            stage_sequence = ["storyboard", *voice_stages, "video_prompt"] + (["visual"] if visual.get("enabled") else [])
+        elif voice_tts.get("enabled"):
             dag_version = M4_2_DAG_VERSION
             stage_sequence = ["storyboard", "voice_script", "voice_director", "voice_tts"] + (["visual"] if visual.get("enabled") else [])
         elif voice_director.get("enabled"):
@@ -1310,11 +1444,13 @@ class ProductionService:
                 "voice_script": self.voice_script_adapter.contract_version if voice_script.get("enabled") else "",
                 "voice_director": self.voice_director_adapter.contract_version if voice_director.get("enabled") else "",
                 "voice_tts": self.voice_tts_adapter.contract_version if voice_tts.get("enabled") else "",
+                "video_prompt": self.video_prompt_adapter.contract_version if video_prompt.get("enabled") else "",
             },
             "models": {
                 "storyboard": self._configured_model(),
                 "voice_director": self.voice_director_adapter.model_profile if voice_director.get("enabled") else "",
                 "voice_tts": self.voice_tts_adapter.model_profile if voice_tts.get("enabled") else "",
+                "video_prompt": getattr(self.video_prompt_adapter, "model_profile", "deterministic-offline") if video_prompt.get("enabled") else "",
             },
             "prompt_versions": {
                 "storyboard_supervisor": SUPERVISOR_AGENT_VERSION,
@@ -1330,6 +1466,7 @@ class ProductionService:
             "voice_script_settings": voice_script,
             "voice_director_settings": voice_director,
             "voice_tts_settings": voice_tts,
+            "video_prompt_settings": video_prompt,
             "predecessor_run_id": predecessor_run_id,
             "revision_id": revision_id,
             "reuse_manifest": list(reuse_manifest),
@@ -1346,6 +1483,7 @@ class ProductionService:
             "model": contract.get("models", {}).get("storyboard"),
             "voice_director_model": contract.get("models", {}).get("voice_director", ""),
             "voice_tts_model": contract.get("models", {}).get("voice_tts", ""),
+            "video_prompt_model": contract.get("models", {}).get("video_prompt", ""),
             "adapter": contract.get("adapter_contract_versions", {}).get("storyboard"),
             "prompt": contract.get("prompt_versions", {}).get("storyboard_supervisor"),
             "tool": contract.get("tool_protocol_versions", {}).get("storyboard_supervisor"),
@@ -1354,6 +1492,7 @@ class ProductionService:
             "voice_script_adapter": contract.get("adapter_contract_versions", {}).get("voice_script", ""),
             "voice_director_adapter": contract.get("adapter_contract_versions", {}).get("voice_director", ""),
             "voice_tts_adapter": contract.get("adapter_contract_versions", {}).get("voice_tts", ""),
+            "video_prompt_adapter": contract.get("adapter_contract_versions", {}).get("video_prompt", ""),
             "stage_sequence": list(stages_for_dag(
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             )),
@@ -1364,6 +1503,9 @@ class ProductionService:
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             ) else "",
             "voice_tts_model": self.voice_tts_adapter.model_profile if "voice_tts" in stages_for_dag(
+                str(contract.get("dag_version", "")), contract.get("stage_sequence")
+            ) else "",
+            "video_prompt_model": getattr(self.video_prompt_adapter, "model_profile", "deterministic-offline") if "video_prompt" in stages_for_dag(
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             ) else "",
             "adapter": self.storyboard_adapter.contract_version,
@@ -1380,6 +1522,9 @@ class ProductionService:
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             ) else "",
             "voice_tts_adapter": self.voice_tts_adapter.contract_version if "voice_tts" in stages_for_dag(
+                str(contract.get("dag_version", "")), contract.get("stage_sequence")
+            ) else "",
+            "video_prompt_adapter": self.video_prompt_adapter.contract_version if "video_prompt" in stages_for_dag(
                 str(contract.get("dag_version", "")), contract.get("stage_sequence")
             ) else "",
             "stage_sequence": list(stages_for_dag(
@@ -1426,7 +1571,7 @@ class ProductionService:
     ) -> None:
         payload = terminal.get("payload") if isinstance(terminal.get("payload"), dict) else {}
         stage = str(payload.get("stage", ""))
-        if stage not in {"storyboard", "voice_script", "voice_director", "voice_tts", "visual"}:
+        if stage not in {"storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "visual"}:
             raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "terminal stage is unsupported")
         authority_path = str(payload.get("authority_path", ""))
         expected_hash = str(payload.get("authority_hash", ""))
@@ -1638,6 +1783,50 @@ class ProductionService:
                 or expected_artifacts != recorded_artifacts
             ):
                 raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "voice-tts authority does not match terminal event")
+        elif stage == "video_prompt":
+            scheduled_id = f"video-prompt-{snapshot.run_id.removeprefix('run_')}"
+            output_dir = self.paths.video_prompt_dir(snapshot.run_id, scheduled_id)
+            storyboard_event = next(
+                (event for event in reversed(events) if event.get("run_id") == snapshot.run_id
+                 and event.get("event_type") == "stage_completed"
+                 and (event.get("payload") or {}).get("stage") == "storyboard"),
+                None,
+            )
+            storyboard_payload = (storyboard_event or {}).get("payload") or {}
+            storyboard_outputs = storyboard_payload.get("produced_artifacts") or storyboard_payload.get("reused_artifacts") or []
+            storyboard_public = storyboard_payload.get("artifacts") or []
+            if len(storyboard_outputs) != 1 or len(storyboard_public) != 1:
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "video-prompt authority input is absent")
+            storyboard_ref = ArtifactRef.from_dict(storyboard_outputs[0]).to_dict()
+            storyboard_path = self._stage_private_artifact(
+                path=str(storyboard_public[0].get("path", "")), version_id=storyboard_ref["version_id"],
+                logical_id="storyboard.output", output_dir=output_dir,
+            )
+            inspected = self.video_prompt_adapter.inspect(
+                stage_run_id=scheduled_id, output_dir=output_dir, storyboard_ref=storyboard_ref,
+                storyboard_path=storyboard_path, settings=contract.get("video_prompt_settings", {}),
+            )
+            expected_authority = os.path.relpath(
+                os.path.join(output_dir, self.video_prompt_adapter.authority_name), self.paths.root,
+            )
+            expected_artifacts = {
+                (os.path.realpath(str(item.get("path", ""))), str(item.get("version_id", "")))
+                for item in (inspected.artifacts if inspected is not None else ())
+            }
+            recorded_artifacts = {
+                (os.path.realpath(os.path.join(self.paths.root, str(item.get("path", "")))), str(item.get("version_id", "")))
+                for item in artifacts or [] if isinstance(item, dict)
+            }
+            if (
+                inspected is None or inspected.status != "completed"
+                or inspected.stage_run_id != payload.get("stage_run_id")
+                or payload.get("stage_run_id") != scheduled_id
+                or authority_path != expected_authority
+                or inspected.authority_hash != expected_hash
+                or os.path.realpath(inspected.authority_path) != absolute
+                or expected_artifacts != recorded_artifacts
+            ):
+                raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "video-prompt authority does not match the terminal event")
         elif stage == "visual":
             scheduled_id = f"visual-{snapshot.run_id.removeprefix('run_')}"
             output_dir = self.paths.visual_dir(snapshot.run_id, scheduled_id)
@@ -1939,6 +2128,50 @@ class ProductionService:
         return {"schema_version": "1", "run_id": snapshot.run_id, "stage": "voice_tts",
                 "status": status, "reason": reason, "artifact": artifact_dto,
                 "inputs": inputs, "next_actions": []}
+
+    def get_video_prompt_status(self) -> dict[str, Any]:
+        """Return a path-free DTO for the deterministic M5.0 prompt stage."""
+        snapshot = self.get_status()
+        events = self.store.events.read()
+        terminal = next(
+            (event for event in reversed(events) if event.get("run_id") == snapshot.run_id
+             and event.get("event_type") in {"stage_completed", "stage_failed", "stage_needs_review"}
+             and (event.get("payload") or {}).get("stage") == "video_prompt"),
+            None,
+        )
+        running = has_event(events, snapshot.run_id, "stage_scheduled", "video_prompt")
+        status = "running" if running else "pending"
+        reason = {"code": ReasonCode.PROJECT_READY.value, "message": ""}
+        artifact_dto: dict[str, Any] | None = None
+        inputs: list[dict[str, str]] = []
+        if terminal is not None:
+            payload = terminal.get("payload") or {}
+            if terminal.get("event_type") == "stage_completed":
+                status = "reused" if payload.get("reused_from") else "completed"
+                records = payload.get("produced_artifacts") or payload.get("reused_artifacts") or []
+                artifacts = payload.get("artifacts") or []
+                if len(records) == 1 and len(artifacts) == 1:
+                    record = ArtifactRecord.from_dict(records[0])
+                    value = read_json(self.store.artifact_path(str(artifacts[0].get("path", ""))))
+                    if not isinstance(value, dict) or value.get("schema_version") != "video-prompt-v1":
+                        raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "video-prompt DTO source is invalid")
+                    artifact_dto = {
+                        "logical_id": record.ref.logical_id,
+                        "version_id": record.ref.version_id,
+                        "shot_count": value.get("shot_count"),
+                    }
+                    inputs = [item.to_dict() for item in record.depends_on]
+            else:
+                status = "failed" if terminal.get("event_type") == "stage_failed" else "needs_review"
+                reason = {
+                    "code": str(payload.get("reason_code") or ReasonCode.VIDEO_PROMPT_FAILED.value),
+                    "message": str(payload.get("message", "")),
+                }
+        return {
+            "schema_version": "1", "run_id": snapshot.run_id, "stage": "video_prompt",
+            "status": status, "reason": reason, "artifact": artifact_dto,
+            "inputs": inputs, "next_actions": [],
+        }
 
     def _record_execution_lease_acquired(self, lease: ProjectLock) -> None:
         with ProjectLock(self.paths.lock_file):
@@ -2455,7 +2688,7 @@ class ProductionService:
                         run_id=snapshot.run_id, payload={},
                     )
                     return self._snapshot_and_project()
-                if action in {"advance_storyboard", "advance_voice_script", "advance_voice_director", "advance_voice_tts", "advance_visual"} and contract is not None:
+                if action in {"advance_storyboard", "advance_voice_script", "advance_voice_director", "advance_voice_tts", "advance_video_prompt", "advance_visual"} and contract is not None:
                     stage = action.removeprefix("advance_")
                     if self._stage_execution_action(contract, stage) == "reuse":
                         return self._reuse_predecessor_stage(project=project, snapshot=snapshot, contract=contract,
@@ -2542,6 +2775,90 @@ class ProductionService:
                                 **common,
                                 "reason_code": result.reason_code or ReasonCode.VOICE_SCRIPT_FAILED.value,
                                 "message": result.message,
+                            },
+                        )
+                    return self._snapshot_and_project()
+                if action == "advance_video_prompt" and contract is not None:
+                    run_id = snapshot.run_id
+                    stage_run_id = f"video-prompt-{run_id.removeprefix('run_')}"
+                    output_dir = self.paths.video_prompt_dir(run_id, stage_run_id)
+                    if not has_event(events, run_id, "stage_scheduled", "video_prompt"):
+                        self.store.events.append(
+                            "stage_scheduled", project_id=project["project_id"], run_id=run_id,
+                            payload={"stage": "video_prompt", "stage_invocation_id": stage_run_id},
+                        )
+                    events = self.store.events.read()
+                    storyboard_event = next(
+                        (event for event in reversed(events) if event.get("run_id") == run_id
+                         and event.get("event_type") == "stage_completed"
+                         and (event.get("payload") or {}).get("stage") == "storyboard"),
+                        None,
+                    )
+                    storyboard_payload = (storyboard_event or {}).get("payload") or {}
+                    storyboard_graph = storyboard_payload.get("produced_artifacts") or storyboard_payload.get("reused_artifacts") or []
+                    storyboard_public = storyboard_payload.get("artifacts") or []
+                    if len(storyboard_graph) != 1 or len(storyboard_public) != 1:
+                        raise ProductionError(ReasonCode.STAGE_INTEGRITY_FAILED.value, "video-prompt requires one storyboard artifact")
+                    storyboard_ref = ArtifactRef.from_dict(storyboard_graph[0]).to_dict()
+                    storyboard_path = self._stage_private_artifact(
+                        path=str(storyboard_public[0].get("path", "")), version_id=storyboard_ref["version_id"],
+                        logical_id="storyboard.output", output_dir=output_dir,
+                    )
+                    try:
+                        result = self.video_prompt_adapter.execute(
+                            stage_run_id=stage_run_id, storyboard_path=storyboard_path,
+                            storyboard_ref=storyboard_ref, output_dir=output_dir,
+                            settings=project["production"]["video_prompt"],
+                        )
+                    except Exception as exc:
+                        result = StageResult(
+                            status="failed", stage_run_id=stage_run_id,
+                            reason_code=ReasonCode.VIDEO_PROMPT_FAILED.value,
+                            message="video-prompt stage failed",
+                        )
+                    if not has_event(events, run_id, "stage_run_attached", "video_prompt"):
+                        self.store.events.append(
+                            "stage_run_attached", project_id=project["project_id"], run_id=run_id,
+                            payload={"stage": "video_prompt", "stage_run_id": stage_run_id},
+                        )
+                    common = {
+                        "stage": "video_prompt",
+                        "stage_run_id": stage_run_id,
+                        "authority_path": self._relative_artifact_path(result.authority_path) if result.authority_path else "",
+                        "authority_hash": result.authority_hash,
+                        "authority_files": [
+                            {"path": self._relative_artifact_path(item["path"]), "sha256": item["sha256"]}
+                            for item in result.authority_files
+                        ],
+                        "artifacts": [
+                            {**artifact, "path": self._relative_artifact_path(str(artifact.get("path", "")))}
+                            for artifact in result.artifacts
+                        ],
+                    }
+                    if result.status == "completed" and result.artifacts:
+                        common["produced_artifacts"] = self._produced_artifacts(
+                            stage="video_prompt", run_id=run_id, contract=contract,
+                            artifacts=common["artifacts"], events=self.store.events.read(),
+                        )
+                    if result.status == "completed" and (
+                        not result.authority_path or not result.authority_hash or not result.authority_files or not result.artifacts
+                    ):
+                        result = StageResult(
+                            status="failed", stage_run_id=stage_run_id,
+                            reason_code=ReasonCode.STAGE_INTEGRITY_FAILED.value,
+                            message="video-prompt result lacks authority or artifact bindings",
+                        )
+                    if result.status == "completed":
+                        self.store.events.append(
+                            "stage_completed", project_id=project["project_id"], run_id=run_id, payload=common,
+                        )
+                    else:
+                        self.store.events.append(
+                            "stage_failed", project_id=project["project_id"], run_id=run_id,
+                            payload={
+                                **common,
+                                "reason_code": result.reason_code or ReasonCode.VIDEO_PROMPT_FAILED.value,
+                                "message": "video-prompt stage failed",
                             },
                         )
                     return self._snapshot_and_project()

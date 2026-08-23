@@ -14,6 +14,13 @@ from manju.production.models import (
     PROJECT_SCHEMA_VERSION,
     ProductionError,
     ReasonCode,
+    VIDEO_PROMPT_MAX_DURATION_SECONDS,
+    VIDEO_PROMPT_MAX_INPUT_BYTES,
+    VIDEO_PROMPT_MAX_OUTPUT_BYTES,
+    VIDEO_PROMPT_MAX_PROMPT_CHARS,
+    VIDEO_PROMPT_MAX_SHOTS,
+    VIDEO_PROMPT_MAX_TEXT_CHARS,
+    VIDEO_PROMPT_MAX_TOTAL_DURATION_SECONDS,
     fingerprint,
 )
 from manju.production.paths import ProjectPaths
@@ -50,6 +57,7 @@ class ProjectStore:
         voice_script = production.get("voice_script", {"enabled": False}) if isinstance(production, dict) else None
         voice_director = production.get("voice_director", {"enabled": False}) if isinstance(production, dict) else None
         voice_tts = production.get("voice_tts", {"enabled": False}) if isinstance(production, dict) else None
+        video_prompt = production.get("video_prompt", {"enabled": False}) if isinstance(production, dict) else None
         if not isinstance(source, dict) or source.get("type") not in {"novel", "script", "storyboard"}:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "source.type 不受支持")
         if not isinstance(source.get("path"), str) or not isinstance(source.get("sha256"), str):
@@ -98,6 +106,30 @@ class ProjectStore:
                 raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts provider profile is invalid")
             if voice_tts.get("provider_request") is not None and not isinstance(voice_tts.get("provider_request"), dict):
                 raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.voice_tts provider request is invalid")
+        if not isinstance(video_prompt, dict) or not isinstance(video_prompt.get("enabled"), bool):
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.video_prompt contract is invalid")
+        if video_prompt.get("enabled"):
+            if video_prompt.get("mode") != "deterministic_offline" or video_prompt.get("schema_version") != "video-prompt-v1":
+                raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "production.video_prompt binding is invalid")
+            integer_limits = {
+                "max_input_bytes": VIDEO_PROMPT_MAX_INPUT_BYTES,
+                "max_output_bytes": VIDEO_PROMPT_MAX_OUTPUT_BYTES,
+                "max_shots": VIDEO_PROMPT_MAX_SHOTS,
+                "max_text_chars": VIDEO_PROMPT_MAX_TEXT_CHARS,
+                "max_prompt_chars": VIDEO_PROMPT_MAX_PROMPT_CHARS,
+            }
+            for key, upper in integer_limits.items():
+                value = video_prompt.get(key)
+                if not isinstance(value, int) or isinstance(value, bool) or value < 1 or value > upper:
+                    raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"production.video_prompt {key} is invalid")
+            float_limits = {
+                "max_duration_seconds": VIDEO_PROMPT_MAX_DURATION_SECONDS,
+                "max_total_duration_seconds": VIDEO_PROMPT_MAX_TOTAL_DURATION_SECONDS,
+            }
+            for key, upper in float_limits.items():
+                value = video_prompt.get(key)
+                if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0 or float(value) > upper:
+                    raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"production.video_prompt {key} is invalid")
         if visual.get("enabled"):
             engine = visual.get("engine")
             profile = visual.get("provider_profile")

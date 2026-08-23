@@ -40,6 +40,40 @@ M4_2_VISUAL_NODES = M4_2_NODES + (
     DagNode(node_id="visual", stage="visual", dependencies=("storyboard",)),
 )
 
+# M5.0 keeps video_prompt as a sibling of the voice chain.  The linear
+# scheduler still visits it after enabled voice stages, while the artifact
+# graph intentionally binds it only to storyboard.
+M5_NODES = M1_NODES + (
+    DagNode(node_id="video_prompt", stage="video_prompt", dependencies=("storyboard",)),
+)
+M5_VISUAL_NODES = M5_NODES + (
+    DagNode(node_id="visual", stage="visual", dependencies=("storyboard",)),
+)
+M5_VOICE_SCRIPT_NODES = M1_NODES + (
+    DagNode(node_id="voice_script", stage="voice_script", dependencies=("storyboard",)),
+    DagNode(node_id="video_prompt", stage="video_prompt", dependencies=("storyboard",)),
+)
+M5_VOICE_SCRIPT_VISUAL_NODES = M5_VOICE_SCRIPT_NODES + (
+    DagNode(node_id="visual", stage="visual", dependencies=("storyboard",)),
+)
+M5_VOICE_DIRECTOR_NODES = M1_NODES + (
+    DagNode(node_id="voice_script", stage="voice_script", dependencies=("storyboard",)),
+    DagNode(node_id="voice_director", stage="voice_director", dependencies=("voice_script",)),
+    DagNode(node_id="video_prompt", stage="video_prompt", dependencies=("storyboard",)),
+)
+M5_VOICE_DIRECTOR_VISUAL_NODES = M5_VOICE_DIRECTOR_NODES + (
+    DagNode(node_id="visual", stage="visual", dependencies=("storyboard",)),
+)
+M5_VOICE_TTS_NODES = M1_NODES + (
+    DagNode(node_id="voice_script", stage="voice_script", dependencies=("storyboard",)),
+    DagNode(node_id="voice_director", stage="voice_director", dependencies=("voice_script",)),
+    DagNode(node_id="voice_tts", stage="voice_tts", dependencies=("voice_director",)),
+    DagNode(node_id="video_prompt", stage="video_prompt", dependencies=("storyboard",)),
+)
+M5_VOICE_TTS_VISUAL_NODES = M5_VOICE_TTS_NODES + (
+    DagNode(node_id="visual", stage="visual", dependencies=("storyboard",)),
+)
+
 
 def stage_event_state(events: list[dict[str, Any]], run_id: str, stage: str) -> str:
     state = "pending"

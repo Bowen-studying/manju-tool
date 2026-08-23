@@ -17,7 +17,18 @@ M2_DAG_VERSION = "production-m2-v1"
 M4_DAG_VERSION = "production-m4-v1"
 M4_1_DAG_VERSION = "production-m4.1-v1"
 M4_2_DAG_VERSION = "production-m4.2-v1"
+M5_DAG_VERSION = "production-m5.0-v1"
 M2_CONTRACT_VERSION = "1"
+
+# M5.0 is deliberately bounded before any storyboard bytes are interpreted.
+# These are contract limits, not provider quotas: the stage is fully offline.
+VIDEO_PROMPT_MAX_INPUT_BYTES = 4 * 1024 * 1024
+VIDEO_PROMPT_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+VIDEO_PROMPT_MAX_SHOTS = 512
+VIDEO_PROMPT_MAX_TEXT_CHARS = 4096
+VIDEO_PROMPT_MAX_PROMPT_CHARS = 8192
+VIDEO_PROMPT_MAX_DURATION_SECONDS = 600.0
+VIDEO_PROMPT_MAX_TOTAL_DURATION_SECONDS = 3600.0
 
 
 def stages_for_dag(dag_version: str, declared: Any = None) -> tuple[str, ...]:
@@ -54,6 +65,20 @@ def stages_for_dag(dag_version: str, declared: Any = None) -> tuple[str, ...]:
             ("storyboard", "voice_script", "voice_director", "voice_tts", "visual"),
         }:
             raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M4.2 stage sequence is invalid")
+        return candidate
+    elif dag_version == M5_DAG_VERSION:
+        candidate = tuple(declared) if declared is not None else ()
+        if candidate not in {
+            ("storyboard", "video_prompt"),
+            ("storyboard", "video_prompt", "visual"),
+            ("storyboard", "voice_script", "video_prompt"),
+            ("storyboard", "voice_script", "video_prompt", "visual"),
+            ("storyboard", "voice_script", "voice_director", "video_prompt"),
+            ("storyboard", "voice_script", "voice_director", "video_prompt", "visual"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt"),
+            ("storyboard", "voice_script", "voice_director", "voice_tts", "video_prompt", "visual"),
+        }:
+            raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, "M5.0 stage sequence is invalid")
         return candidate
     else:
         raise ProductionError(ReasonCode.UNSUPPORTED_SCHEMA_VERSION.value, f"unsupported dag: {dag_version}")
@@ -107,6 +132,7 @@ class ReasonCode(str, Enum):
     VOICE_SCRIPT_FAILED = "VOICE_SCRIPT_FAILED"
     VOICE_DIRECTOR_FAILED = "VOICE_DIRECTOR_FAILED"
     VOICE_TTS_FAILED = "VOICE_TTS_FAILED"
+    VIDEO_PROMPT_FAILED = "VIDEO_PROMPT_FAILED"
 
 
 REASON_DEFAULTS: dict[str, tuple[str, int]] = {
@@ -144,6 +170,7 @@ REASON_DEFAULTS.update({
     ReasonCode.VOICE_SCRIPT_FAILED.value: ("配音脚本阶段失败", 1),
     ReasonCode.VOICE_DIRECTOR_FAILED.value: ("配音导演阶段失败", 1),
     ReasonCode.VOICE_TTS_FAILED.value: ("TTS 音频阶段失败", 1),
+    ReasonCode.VIDEO_PROMPT_FAILED.value: ("离线视频提示词阶段失败", 1),
 })
 
 

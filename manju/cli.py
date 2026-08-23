@@ -132,12 +132,13 @@ def project():
 @click.option("--voice-script", is_flag=True, help="启用离线确定性配音脚本阶段（不调用 TTS）")
 @click.option("--voice-director", is_flag=True, help="启用离线 LangGraph 配音导演阶段（只生成 voice_direction，不调用 TTS）")
 @click.option("--voice-tts", is_flag=True, help="启用离线 fake TTS 阶段（生成 WAV，不调用 Provider）")
+@click.option("--video-prompts", is_flag=True, help="启用离线确定性 video_prompt 阶段（不调用视频 Provider）")
 @click.option("--json", "json_output", is_flag=True, help="输出稳定 JSON DTO")
 def project_init(source, source_type, output_dir, engine, max_scenes, agent_max_steps,
                   agent_max_calls, agent_max_revisions, provider_profile, hmac_key_id,
                   visual_mock, visual_provider_profile, visual_request_file, visual_operation_kind,
                   visual_max_calls, visual_max_amount, visual_settlement_mode,
-                  visual_contractual_tariff_id, visual_contractual_tariff_amount, voice_script, voice_director, voice_tts, json_output):
+                  visual_contractual_tariff_id, visual_contractual_tariff_amount, voice_script, voice_director, voice_tts, video_prompts, json_output):
     """创建项目合同并接收一个持久化源文件。"""
     from manju.production import ProductionError, initialize_project
 
@@ -171,6 +172,7 @@ def project_init(source, source_type, output_dir, engine, max_scenes, agent_max_
             voice_script_enabled=voice_script,
             voice_director_enabled=voice_director,
             voice_tts_enabled=voice_tts,
+            video_prompt_enabled=video_prompts,
         )
         _echo_production_payload(snapshot, json_output=json_output)
     except ProductionError as exc:
