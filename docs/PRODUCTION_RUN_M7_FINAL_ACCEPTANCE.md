@@ -42,7 +42,8 @@ M7 的工程验收证据、恢复/计费边界和真实 TTS 补测均有记录�
 ## 提交与复现边界
 
 - 发布验收材料只写明双平台使用“同一 Git commit”，没有在材料中记录可独立核验的 commit hash。当前核对 r02 的历史基线是 `871543e`；该 commit 本身只提交了 M7 真实 TTS 证据 JSON，不能单独证明整个测试代码集合都由该 commit 引入。
-- 本次开始前工作树已经 dirty，包含 `storyboard_supervisor.py` 的未提交改动及多项未跟踪材料。本次没有清理、重置、覆盖或提交这些无关内容；本轮最终 dirty 候选已在 Windows/WSL 分别完成 606/610 项测试，但在形成 clean release commit 后仍应再执行一次发布构建冒烟。
+- 本次开始前工作树已经 dirty，包含 `storyboard_supervisor.py` 的未提交改动及多项未跟踪材料。本次没有清理、重置或收录无关内容；M7 代码、测试和证据已形成候选提交 `0930727`。仓库仍显示其他历史未跟踪文件，但该提交本身可独立检出。
+- 候选内容在提交前的相同文件状态上完成 Windows/WSL 606/610 项全量测试，并成功构建 `manju_tool-0.6.0-py3-none-any.whl`；构建仅出现 setuptools 许可证元数据弃用警告，不影响本次 wheel 生成。
 - 本次新增的 CLI 默认测试验证 `storyboard`/`pipeline` 的默认 Agent 路由、显式 legacy 路由、旧输出目录不自动恢复以及图片/音频/视频媒体的 opt-in 默认值；本次没有重新调用真实 API，也没有把聚焦测试结果冒充 20 组矩阵或三评委盲评的重跑结果。
 
 机器可读的解盲映射和逐评委评分汇总见 [`blind_review_mapping.json`](../m7_evidence/blind_review_mapping.json) 与 [`blind_review_summary.json`](../m7_evidence/blind_review_summary.json)；历史映射文件未记录随机种子，因此证据中的 `seed` 明确为 `null`。历史证据文件、盲评材料和映射表仍以其原始日期版本为准；本报告只对已有结果做可追溯汇总。
