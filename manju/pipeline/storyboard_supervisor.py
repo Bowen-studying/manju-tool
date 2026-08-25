@@ -13,6 +13,8 @@ import os
 import re
 import sqlite3
 import sys
+import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, TypedDict
@@ -38,7 +40,17 @@ from manju.pipeline.storyboard_stages import (
     _scene_prompts,
     _scene_source,
 )
-from manju.utils.ai import call_llm, get_ai_config, parse_json_response
+from manju.utils.ai import (
+    LLMHTTPError,
+    LLMOutcomeUnknown,
+    LLMRequestNotDispatched,
+    LLMResponseEmpty,
+    LLMResponseInvalid,
+    call_llm,
+    get_ai_config,
+    parse_json_response,
+    redact_sensitive_text,
+)
 from manju.utils.runtime import atomic_write_json, content_fingerprint, read_json
 
 
@@ -91,6 +103,8 @@ DEFAULT_MAX_STEPS = 40
 DEFAULT_MAX_CALLS = None
 AUTO_MAX_CALLS_CAP = 36
 DEFAULT_MAX_REVISIONS = 2
+CALL_RESERVATION_LOCK_TIMEOUT_SECONDS = 5.0
+CALL_RESERVATION_LOCK_POLL_SECONDS = 0.01
 
 ALLOWED_ACTIONS = (
     "analyze_source",
@@ -177,6 +191,9 @@ class SupervisorState(TypedDict, total=False):
     invalid_action_count: int
     no_progress_count: int
     last_no_progress_signature: str
+    call_stats: dict
+    next_action: dict
+    pending_manual_call: dict
     max_steps: int
     max_calls: int
     requested_max_calls: int | None
@@ -190,6 +207,67 @@ class ModelBudgetExhausted(RuntimeError):
     pass
 
 
+class ProviderCallOutcomeUnknown(RuntimeError):
+    """A provider call may have been charged, but its outcome is not known."""
+
+    def __init__(self, call_id: str, *, status: str = "unknown"):
+        self.call_id = call_id
+        self.status = status
+        super().__init__(f"provider outcome is unknown for {call_id}")
+
+
+class ProviderCallResponseEmpty(RuntimeError):
+    """The provider completed successfully but returned no usable text."""
+
+    def __init__(self, call_id: str):
+        self.call_id = call_id
+        self.status = "empty_response"
+        super().__init__(f"provider returned an empty response for {call_id}")
+
+
+class ProviderCallNotDispatched(RuntimeError):
+    """No provider request was sent; a human may explicitly authorize one retry."""
+
+    def __init__(self, call_id: str):
+        self.call_id = call_id
+        self.status = "not_dispatched"
+        super().__init__(f"provider request was not dispatched for {call_id}")
+
+
+class ProviderCallFailed(RuntimeError):
+    """A provider failure with a known response must stop for human handling."""
+
+    def __init__(self, call_id: str, *, status: str = "failed"):
+        self.call_id = call_id
+        self.status = status
+        super().__init__(f"provider call failed for {call_id}")
+
+
+MANUAL_CONFIRM_NOT_DISPATCHED = "confirm_not_dispatched_authorize_retry"
+MANUAL_IMPORT_RESPONSE = "import_acquired_response"
+MANUAL_CALL_ACTIONS = frozenset({
+    MANUAL_CONFIRM_NOT_DISPATCHED,
+    MANUAL_IMPORT_RESPONSE,
+})
+ALLOWED_NARRATOR_SPEAKERS = frozenset({
+    "旁白", "叙述者", "画外音", "画外声音",
+})
+NON_CHARACTER_SPEAKER_LABELS = frozenset({
+    "他", "她", "它", "对方", "那人", "这个人", "有人", "门外有人", "某人",
+    "陌生人", "未知声音",
+})
+SPEECH_VERBS = (
+    "说道", "说", "追问", "反问", "问道", "问", "回答", "答道", "喊道", "喊",
+    "叫道", "警告", "补充", "低语", "开口道", "道", "表示", "告诉", "告知",
+    "称", "提到", "解释", "询问", "提醒", "shouted", "said", "asked", "replied",
+    "answered", "warned", "whispered",
+)
+SOURCE_WRITTEN_QUOTE_MARKERS = (
+    "日记", "日志", "最后一行", "信上", "纸上", "书中", "碑上", "写着", "记载",
+    "记录着",
+)
+
+
 def _now() -> str:
     return datetime.now().astimezone().isoformat(timespec="seconds")
 
@@ -200,9 +278,7 @@ def _redact_configured_secret(text: str) -> str:
         _, _, api_key = get_ai_config()
     except Exception:
         api_key = None
-    if api_key:
-        value = value.replace(str(api_key), "[REDACTED]")
-    return value
+    return redact_sensitive_text(value, (api_key,) if api_key else ())
 
 
 def _safe_value(value: Any) -> Any:
@@ -315,11 +391,245 @@ def _call_record_path(state: SupervisorState, call_id: str) -> str:
     return os.path.join(_call_dir(state), safe_id + ".json")
 
 
+def _call_attempt_path(state: SupervisorState, call_id: str, attempt: int) -> str:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", call_id)[:140]
+    return os.path.join(_call_dir(state), f"{safe_id}__attempt_{attempt:04d}.json")
+
+
+def _call_records(state: SupervisorState, call_id: str) -> list[str]:
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", call_id)[:140]
+    directory = _call_dir(state)
+    paths = []
+    legacy = os.path.join(directory, safe_id + ".json")
+    if os.path.isfile(legacy):
+        paths.append((0, legacy))
+    prefix = safe_id + "__attempt_"
+    for name in os.listdir(directory):
+        if name.startswith(prefix) and name.endswith(".json"):
+            number = name[len(prefix):-5]
+            if number.isdigit():
+                paths.append((int(number), os.path.join(directory, name)))
+    return [path for _, path in sorted(paths)]
+
+
+def _latest_call_record(
+    state: SupervisorState, call_id: str,
+) -> tuple[str | None, dict | None, str | None]:
+    paths = _call_records(state, call_id)
+    if not paths:
+        return None, None, None
+    path = paths[-1]
+    record = read_json(path)
+    if not isinstance(record, dict):
+        return "unknown", None, path
+    return str(record.get("status", "unknown")), record, path
+
+
 def _count_model_calls(state: SupervisorState) -> int:
     path = os.path.join(state["run_dir"], "model_calls")
     if not os.path.isdir(path):
         return 0
-    return len([name for name in os.listdir(path) if name.endswith(".json")])
+    count = 0
+    for name in os.listdir(path):
+        if not name.endswith(".json"):
+            continue
+        record = read_json(os.path.join(path, name))
+        if isinstance(record, dict) and record.get("status") == "reconciled_not_dispatched":
+            continue
+        count += 1
+    return count
+
+
+def _append_call_reconciliation(state: SupervisorState, event: dict) -> None:
+    path = os.path.join(_call_dir(state), "reconciliations.jsonl")
+    with open(path, "a", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(_safe_value(event), ensure_ascii=False) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+
+
+def reconcile_model_call(
+    state: SupervisorState,
+    call_id: str,
+    *,
+    action: str,
+    reviewer: str,
+    reason: str,
+    response: str | None = None,
+) -> dict:
+    """Resolve a stopped model attempt only through an explicit audited act."""
+    reviewer = str(reviewer).strip()
+    reason = str(reason).strip()
+    if len(reviewer) < 2 or len(reason) < 8:
+        raise ValueError("reviewer and a specific reconciliation reason are required")
+    if action not in MANUAL_CALL_ACTIONS:
+        raise ValueError("unsupported model-call reconciliation action")
+    lock = _acquire_call_reservation_lock(state)
+    try:
+        status, record, path = _latest_call_record(state, call_id)
+        if path is None or not isinstance(record, dict):
+            raise ValueError("model call record not found")
+        event = {
+            "event_id": uuid.uuid4().hex,
+            "timestamp": _now(),
+            "call_id": call_id,
+            "attempt": record.get("attempt"),
+            "previous_status": status,
+            "action": action,
+            "reviewer": reviewer,
+            "reason": reason,
+        }
+        if action == MANUAL_CONFIRM_NOT_DISPATCHED:
+            if status not in {"not_dispatched", "in_flight", "unknown"}:
+                raise ValueError("only an unconfirmed attempt can be confirmed not dispatched")
+            updated = {
+                **record,
+                "status": "reconciled_not_dispatched",
+                "dispatched": False,
+                "reconciled_at": event["timestamp"],
+                "reconciliation_event_id": event["event_id"],
+            }
+        else:
+            if status not in {"in_flight", "unknown", "empty_response", "failed"}:
+                raise ValueError("this attempt does not accept an imported response")
+            safe_response = _redact_configured_secret(response) if isinstance(response, str) else ""
+            if not safe_response.strip():
+                raise ValueError("a non-empty acquired response is required")
+            parsed = parse_json_response(safe_response)
+            cached_response = (
+                json.dumps(_safe_value(parsed), ensure_ascii=False)
+                if isinstance(parsed, dict) else safe_response[:12000]
+            )
+            updated = {
+                **record,
+                "status": "complete",
+                "response": cached_response,
+                "reconciled_at": event["timestamp"],
+                "reconciliation_event_id": event["event_id"],
+            }
+            event["response_sha256"] = hashlib.sha256(
+                cached_response.encode("utf-8")
+            ).hexdigest()
+        _append_call_reconciliation(state, event)
+        atomic_write_json(path, updated)
+        return event
+    finally:
+        lock.__exit__(None, None, None)
+
+
+def _call_reservation_lock_path(state: SupervisorState) -> str:
+    return os.path.join(state["run_dir"], ".model_call_reservation.lock")
+
+
+def _acquire_call_reservation_lock(
+    state: SupervisorState,
+    *,
+    timeout: float = CALL_RESERVATION_LOCK_TIMEOUT_SECONDS,
+) -> ProjectLock:
+    """Acquire only the short check-and-reserve critical section.
+
+    ProjectLock uses an exclusive create and only recovers a lock whose owner
+    PID is no longer alive. A live owner is never deleted; this loop adds a
+    bounded wait so a competing thread/process observes the durable
+    reservation instead of racing the same attempt number.
+    """
+    # Import lazily: manju.production.__init__ exposes ProductionService,
+    # whose module imports this supervisor.
+    from manju.production.locking import ProjectLock
+    from manju.production.models import ProductionError
+
+    deadline = time.monotonic() + max(0.0, float(timeout))
+    last_error: Exception | None = None
+    while True:
+        lock = ProjectLock(_call_reservation_lock_path(state), attempts=2)
+        try:
+            lock.__enter__()
+            return lock
+        except ProductionError as exc:
+            last_error = exc
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    "timed out acquiring storyboard call reservation lock"
+                ) from exc
+            time.sleep(CALL_RESERVATION_LOCK_POLL_SECONDS)
+        except Exception:
+            raise
+    if last_error is not None:  # pragma: no cover - loop always returns/raises
+        raise TimeoutError("timed out acquiring storyboard call reservation lock") from last_error
+
+
+def _write_new_attempt_record(path: str, value: dict) -> None:
+    """Create a reservation exactly once; never replace an attempt file."""
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as handle:
+            descriptor = -1
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor != -1:
+            os.close(descriptor)
+
+
+def _reserve_call_attempt(
+    state: SupervisorState,
+    call_id: str,
+) -> tuple[str, dict | None]:
+    """Atomically check the shared budget and publish one in-flight attempt."""
+    lock = _acquire_call_reservation_lock(state)
+    try:
+        status, cached, _ = _latest_call_record(state, call_id)
+        if status == "complete":
+            response = cached.get("response") if isinstance(cached, dict) else None
+            return "cached", {
+                "response": response,
+            } if isinstance(response, str) and response.strip() else None
+        if status in {"invalid_response", "invalid_contract"}:
+            return "invalid", None
+        if status == "empty_response":
+            raise ProviderCallResponseEmpty(call_id)
+        if status == "reconciled_not_dispatched":
+            status = None
+        if status == "not_dispatched":
+            raise ProviderCallNotDispatched(call_id)
+        if status in {"in_flight", "unknown"}:
+            raise ProviderCallOutcomeUnknown(call_id, status=status)
+        if status is not None:
+            raise ProviderCallOutcomeUnknown(call_id, status=status)
+        if _count_model_calls(state) >= state["max_calls"]:
+            raise ModelBudgetExhausted("model call budget exhausted")
+
+        attempt = 1
+        records = _call_records(state, call_id)
+        if records:
+            numbers = []
+            safe_id = re.sub(r"[^A-Za-z0-9_.-]+", "_", call_id)[:140]
+            prefix = safe_id + "__attempt_"
+            for record_path in records:
+                name = os.path.basename(record_path)
+                number = name[len(prefix):-5] if name.startswith(prefix) and name.endswith(".json") else ""
+                if number.isdigit():
+                    numbers.append(int(number))
+            attempt = max(numbers, default=0) + 1
+        reservation = {
+            "call_id": call_id,
+            "attempt": attempt,
+            "status": "in_flight",
+            "reserved": True,
+            "dispatched": True,
+            "started_at": _now(),
+        }
+        while True:
+            path = _call_attempt_path(state, call_id, attempt)
+            try:
+                _write_new_attempt_record(path, reservation)
+                return path, reservation
+            except FileExistsError:
+                attempt += 1
+                reservation["attempt"] = attempt
+    finally:
+        lock.__exit__(None, None, None)
 
 
 def _call_text_cached(
@@ -336,25 +646,102 @@ def _call_text_cached(
     If a graph node fails after the provider returned, resume reuses this file
     instead of charging for or repeating the same call.
     """
-    path = _call_record_path(state, call_id)
-    cached = read_json(path)
-    if isinstance(cached, dict) and cached.get("status") == "complete":
-        response = cached.get("response")
+    status, cached, _ = _latest_call_record(state, call_id)
+    if status == "reconciled_not_dispatched":
+        status = None
+    if status == "complete":
+        response = cached.get("response") if isinstance(cached, dict) else None
         return response if isinstance(response, str) and response.strip() else None
-    if isinstance(cached, dict) and cached.get("status") in {"invalid_response", "invalid_contract"}:
+    if status in {"invalid_response", "invalid_contract"}:
         return None
-    if _count_model_calls(state) >= state["max_calls"]:
-        raise ModelBudgetExhausted("model call budget exhausted")
-    response = call_llm(system, user, max_tokens=max_tokens, temperature=temperature)
+    if status == "empty_response":
+        raise ProviderCallResponseEmpty(call_id)
+    if status == "not_dispatched":
+        raise ProviderCallNotDispatched(call_id)
+    if status in {"in_flight", "unknown"}:
+        raise ProviderCallOutcomeUnknown(call_id, status=status)
+    if status is not None:
+        raise ProviderCallOutcomeUnknown(call_id, status=status)
+    reservation_path, reservation = _reserve_call_attempt(state, call_id)
+    if reservation_path == "cached":
+        response = reservation.get("response") if isinstance(reservation, dict) else None
+        return response if isinstance(response, str) and response.strip() else None
+    if reservation_path == "invalid":
+        return None
+    path = reservation_path
+    if not isinstance(reservation, dict):
+        raise RuntimeError("call reservation was not created")
+    try:
+        # Keep transport retries outside this logical budget: one invocation,
+        # one durable attempt. Recovery must never replay an unknown outcome.
+        response = call_llm(
+            system, user, max_tokens=max_tokens, temperature=temperature, retries=0,
+        )
+    except LLMRequestNotDispatched as exc:
+        atomic_write_json(path, {
+            **reservation,
+            "status": "not_dispatched",
+            "dispatched": False,
+            "error": "provider_request_not_dispatched",
+            "error_type": type(exc).__name__,
+            "completed_at": _now(),
+        })
+        raise ProviderCallNotDispatched(call_id) from exc
+    except LLMResponseEmpty as exc:
+        atomic_write_json(path, {
+            **reservation,
+            "status": "empty_response",
+            "dispatched": True,
+            "http_succeeded": True,
+            "error": "provider_returned_empty_response",
+            "error_type": type(exc).__name__,
+            "completed_at": _now(),
+        })
+        raise ProviderCallResponseEmpty(call_id) from exc
+    except (LLMHTTPError, LLMResponseInvalid) as exc:
+        atomic_write_json(path, {
+            **reservation,
+            "status": "failed",
+            "dispatched": True,
+            "error": getattr(exc, "kind", "provider_error"),
+            "error_type": type(exc).__name__,
+            "error_message": _redact_configured_secret(str(exc))[:500],
+            "completed_at": _now(),
+        })
+        raise ProviderCallFailed(call_id, status=getattr(exc, "kind", "failed")) from exc
+    except LLMOutcomeUnknown as exc:
+        atomic_write_json(path, {
+            **reservation,
+            "status": "unknown",
+            "dispatched": True,
+            "error": "provider_call_outcome_unknown",
+            "error_type": type(exc).__name__,
+            "error_message": _redact_configured_secret(str(exc))[:500],
+            "completed_at": _now(),
+        })
+        raise ProviderCallOutcomeUnknown(call_id) from exc
+    except Exception as exc:
+        atomic_write_json(path, {
+            **reservation,
+            "status": "unknown",
+            "dispatched": True,
+            "error": "provider_call_outcome_unknown",
+            "error_type": type(exc).__name__,
+            "error_message": _redact_configured_secret(str(exc))[:500],
+            "completed_at": _now(),
+        })
+        raise ProviderCallOutcomeUnknown(call_id) from exc
     safe_response = _redact_configured_secret(response) if isinstance(response, str) else None
     if not isinstance(safe_response, str) or not safe_response.strip():
         atomic_write_json(path, {
-            "call_id": call_id,
-            "status": "invalid_response",
+            **reservation,
+            "status": "empty_response",
+            "dispatched": True,
+            "http_succeeded": True,
             "error": "provider_returned_empty_response",
             "completed_at": _now(),
         })
-        return None
+        raise ProviderCallResponseEmpty(call_id)
     # Persist only the structured JSON envelope. Explanatory prose outside the
     # object could contain hidden reasoning and is unnecessary for resume.
     cached_response = safe_response
@@ -364,10 +751,11 @@ def _call_text_cached(
             cached_response = json.dumps(_safe_value(parsed), ensure_ascii=False)
         else:
             envelope = re.search(r"\{.*\}", safe_response, flags=re.DOTALL)
-            cached_response = envelope.group(0) if envelope else ""
+            cached_response = envelope.group(0) if envelope else safe_response[:12000]
     atomic_write_json(path, {
-        "call_id": call_id,
+        **reservation,
         "status": "complete",
+        "dispatched": True,
         "response": cached_response,
         "completed_at": _now(),
     })
@@ -391,16 +779,7 @@ def _call_json_cached(
     if isinstance(parsed, dict):
         return parsed
     if not response:
-        retried = _call_text_cached(
-            state,
-            call_id + "_empty_retry",
-            system + " The previous provider response was empty. Return the required JSON object now.",
-            user,
-            max_tokens=max_tokens,
-            temperature=0,
-        )
-        parsed = parse_json_response(retried) if retried else None
-        return parsed if isinstance(parsed, dict) else None
+        return None
     repaired = _call_text_cached(
         state,
         call_id + "_repair",
@@ -415,8 +794,9 @@ def _call_json_cached(
 
 def _mark_call_invalid_contract(state: SupervisorState, call_id: str, errors: list[str]) -> None:
     """Keep a paid response for audit/resume, but never replay it as usable output."""
-    path = _call_record_path(state, call_id)
-    record = read_json(path)
+    _, record, path = _latest_call_record(state, call_id)
+    if path is None:
+        return
     payload = dict(record) if isinstance(record, dict) else {"call_id": call_id}
     payload.update({
         "status": "invalid_contract",
@@ -533,7 +913,10 @@ def _valid_source_analysis(value: Any, chunk: str) -> bool:
         if not isinstance(beat, dict):
             return False
         quote = str(beat.get("source_quote", "")).strip()
-        if not quote or quote not in chunk:
+        # Whitespace-normalise both sides: LLM responses legitimately fold
+        # line breaks/punctuation spacing; the fidelity gate is about exact
+        # source content, not byte-identical formatting.
+        if not quote or " ".join(quote.split()) not in " ".join(chunk.split()):
             return False
     entities = value.get("entities", [])
     return isinstance(entities, list)
@@ -769,6 +1152,50 @@ def _supervisor_node(state: SupervisorState) -> dict:
             max_tokens=900,
             temperature=0.1,
         )
+    except ProviderCallOutcomeUnknown as exc:
+        return {
+            "status": "needs_review",
+            "stop_reason": "provider_call_outcome_unknown",
+            "next_action": {
+                "action": MANUAL_IMPORT_RESPONSE,
+                "call_id": exc.call_id,
+                "reason": "request was dispatched but its result is unknown; import the acquired response or reconcile it manually",
+            },
+            "model_calls": _count_model_calls(state),
+        }
+    except ProviderCallResponseEmpty as exc:
+        return {
+            "status": "needs_review",
+            "stop_reason": "provider_response_empty",
+            "next_action": {
+                "action": MANUAL_IMPORT_RESPONSE,
+                "call_id": exc.call_id,
+                "reason": "HTTP succeeded but no text was returned; inspect the provider result before continuing",
+            },
+            "model_calls": _count_model_calls(state),
+        }
+    except ProviderCallNotDispatched as exc:
+        return {
+            "status": "needs_review",
+            "stop_reason": "provider_request_not_dispatched",
+            "next_action": {
+                "action": MANUAL_CONFIRM_NOT_DISPATCHED,
+                "call_id": exc.call_id,
+                "reason": "confirm that no request was sent before authorizing one retry",
+            },
+            "model_calls": _count_model_calls(state),
+        }
+    except ProviderCallFailed as exc:
+        return {
+            "status": "needs_review",
+            "stop_reason": "provider_call_failed",
+            "next_action": {
+                "action": MANUAL_IMPORT_RESPONSE,
+                "call_id": exc.call_id,
+                "reason": "provider returned a known failure; reconcile it manually before continuing",
+            },
+            "model_calls": _count_model_calls(state),
+        }
     except ModelBudgetExhausted:
         return {
             "status": "needs_review",
@@ -822,7 +1249,7 @@ def _source_sentences(text: str) -> list[str]:
             pieces.append(value)
         pending.clear()
 
-    for character in text:
+    for index, character in enumerate(text):
         if character in "\r\n":
             if quote_stack:
                 pending.append(" ")
@@ -833,9 +1260,25 @@ def _source_sentences(text: str) -> list[str]:
         if character in quote_pairs:
             quote_stack.append(quote_pairs[character])
         elif quote_stack and character == quote_stack[-1]:
+            # Do not flush at the closing quote.  Chinese prose commonly puts
+            # the attribution after it (e.g. “快跑！”门外有人喊道。); flushing
+            # here separates the speaker evidence from the dialogue.
             quote_stack.pop()
             if not quote_stack and len(pending) >= 2 and pending[-2] in sentence_ends:
-                flush()
+                tail_match = re.match(r"\s*([^。！？!?\r\n]{0,40}[。！？!?])", text[index + 1:])
+                tail = tail_match.group(1) if tail_match else ""
+                # Keep a true postposed attribution, but split before a new
+                # dialogue clause such as ”林夏追问：“...”.
+                is_post_attribution = bool(
+                    tail
+                    and not re.search(r"[:：][\s]*[“\"「『]", tail)
+                    and re.search(
+                        r"(?:说道|说|追问|反问|问道|问|回答|答道|喊道|喊|叫道|低语|道)[。！？!?]\s*$",
+                        tail,
+                    )
+                )
+                if not is_post_attribution:
+                    flush()
         elif character == '"':
             if quote_stack and quote_stack[-1] == '"':
                 quote_stack.pop()
@@ -863,11 +1306,138 @@ def _source_sentences(text: str) -> list[str]:
 
 
 def _quoted_dialogue(text: str) -> list[str]:
+    """Return only outermost quoted spans.
+
+    Treating every nested quote as a second spoken line duplicates reported
+    speech.  A small stack is more predictable than independent regexes and
+    keeps mixed Chinese/ASCII nesting attached to the outer utterance.
+    """
+    pairs = {"“": "”", "‘": "’", "「": "」", "『": "』"}
+    stack: list[str] = []
+    start: int | None = None
     values: list[str] = []
-    for pattern in (r"\u201c([^\u201d]{1,500})\u201d", r'"([^"\r\n]{1,500})"',
-                    r"\u300c([^\u300d]{1,500})\u300d", r"\u300e([^\u300f]{1,500})\u300f"):
-        values.extend(match.strip() for match in re.findall(pattern, text) if match.strip())
+    for index, character in enumerate(text):
+        if character in pairs:
+            if not stack:
+                start = index + 1
+            stack.append(pairs[character])
+        elif character == '"':
+            if stack and stack[-1] == '"':
+                stack.pop()
+                if not stack and start is not None:
+                    value = text[start:index].strip()
+                    if value:
+                        values.append(value)
+                    start = None
+            else:
+                if not stack:
+                    start = index + 1
+                stack.append('"')
+        elif stack and character == stack[-1]:
+            stack.pop()
+            if not stack and start is not None:
+                value = text[start:index].strip()
+                if value:
+                    values.append(value)
+                start = None
     return list(dict.fromkeys(values))
+
+
+_NARRATION_LABELS = {"旁白", "画外音", "内心独白", "字幕"}
+_WRITTEN_QUOTE_MARKERS = re.compile(
+    r"(?:日记|信件?|纸条|笔记|屏幕|公告|标题|相框|照片|书中|写着|写道|最后一行)"
+)
+_SPEECH_VERBS = re.compile(
+    r"(?:说道|说|追问|反问|问道|问|回答|答道|喊道|喊|叫道|警告|补充|低语|"
+    r"开口道|表示|告诉|告知|称|提到|解释|询问|提醒|道)"
+)
+
+
+def _explicit_script_speaker(beat_text: str) -> str:
+    match = re.match(
+        r"\s*([A-Z][A-Za-z0-9_-]{0,30}|[\u4e00-\u9fff]{1,8})\s*[:：]",
+        beat_text,
+    )
+    if not match:
+        return ""
+    speaker = match.group(1).strip()
+    if re.search(r"(?:日记|信件?|纸条|笔记|传来|一句|听见|听到|看见|看向|写道|说道|说|问|喊|走|然后|对)", speaker):
+        return ""
+    return "" if speaker in _NARRATION_LABELS else speaker
+
+
+def _plausible_character_name(value: str) -> bool:
+    name = str(value).strip()
+    if not name or name in _NARRATION_LABELS or name in NON_CHARACTER_SPEAKER_LABELS:
+        return False
+    if re.search(r"(?:日记|信件?|纸条|笔记|屏幕|公告|标题|相框|照片|书中)", name):
+        return False
+    if re.search(
+        r"(?:低声|轻声|高声|大声|小声|沉声|厉声|说道|说|追问|反问|问道|"
+        r"回答|答道|喊道|叫道|写道|听见|听到|看见|看向|然后|传来|一句|对)",
+        name,
+    ):
+        return False
+    return True
+
+
+def _attributed_source_speakers(beat_text: str) -> list[str]:
+    """Extract only names with an explicit grammatical speaking role."""
+    explicit = _explicit_script_speaker(beat_text)
+    if explicit:
+        return [explicit]
+    name = r"(?:[\u4e00-\u9fff]{1,6}|[A-Z][A-Za-z0-9_-]{0,30})"
+    values: list[str] = []
+    patterns = (
+        rf"(?:^|[，,。！？!?])\s*({name})\s*对\s*(?:{name}).{{0,6}}{_SPEECH_VERBS.pattern}",
+        rf"(?:听见|听到)\s*({name}).{{0,6}}{_SPEECH_VERBS.pattern}",
+        rf"(?:^|[，,。！？!?])\s*([\u4e00-\u9fff]{{1,6}}?|[A-Z][A-Za-z0-9_-]{{0,30}})(?:低声|轻声|高声|大声|小声|沉声|厉声|"
+        rf"冷冷|平静|急切|喃喃)?(?:地)?{_SPEECH_VERBS.pattern}\s*[:：,，]?\s*[“\"「『]",
+    )
+    for pattern in patterns:
+        match = re.search(pattern, beat_text)
+        if match:
+            candidate = match.group(1).strip()
+            for dangling_modifier in ("低", "轻", "高", "大", "小", "沉", "厉"):
+                if candidate.endswith(dangling_modifier) and len(candidate) > 1:
+                    candidate = candidate[:-1]
+                    break
+            if _plausible_character_name(candidate):
+                values.append(candidate)
+    return list(dict.fromkeys(values))
+
+
+def _quote_is_non_dialogue(beat_text: str, line: str) -> bool:
+    prefix = beat_text[:beat_text.find(line)] if line in beat_text else beat_text
+    label = re.match(r"\s*([\u4e00-\u9fff]{1,8})\s*[:：]", beat_text)
+    if label and label.group(1) in _NARRATION_LABELS:
+        return True
+    if re.match(
+        r"\s*(?:旁白|画外音|内心独白|字幕)(?:说道|说|念道|写道)?\s*[:：,，]?",
+        beat_text,
+    ):
+        return True
+    written_context = bool(re.search(
+        r"(?:日记|信件?|纸条|笔记|屏幕|公告|标题|相框|照片|书中)"
+        r"[^“\"「『”\"」』]{0,16}(?:写着|写道|一行|内容|文字)",
+        beat_text,
+    )) or bool(re.search(
+        r"(?:这是|是)(?:日记|信件?|纸条|笔记|屏幕|公告|标题).{0,12}(?:一行|内容|文字)",
+        beat_text,
+    ))
+    return written_context or (
+        bool(_WRITTEN_QUOTE_MARKERS.search(prefix)) and not bool(_SPEECH_VERBS.search(prefix))
+    )
+
+
+def _looks_like_spoken_quote(beat_text: str, line: str) -> bool:
+    if _quote_is_non_dialogue(beat_text, line):
+        return False
+    return bool(
+        _explicit_script_speaker(beat_text)
+        or _SPEECH_VERBS.search(beat_text)
+        or re.search(r"(?:传来|听见|听到).{0,8}(?:一句|声音)", beat_text)
+    )
 
 
 def _infer_dialogue_speaker(
@@ -876,30 +1446,8 @@ def _infer_dialogue_speaker(
     candidate_names: list[str] | None = None,
 ) -> str:
     """Resolve explicit nearby attribution without inventing a character."""
-    escaped = re.escape(line)
-    chinese_name = r"([\u4e00-\u9fff]{1,8}?)"
-    chinese_modifier = (
-        r"(?:低声|轻声|高声|大声|小声|沉声|厉声|冷冷|平静|急切|喃喃)?(?:地)?"
-    )
-    chinese_verb = r"(?:说道|说|追问|反问|问道|问|回答|答道|喊道|喊|叫道|警告|补充|低语|开口道|道)"
-    english_name = r"([A-Z][A-Za-z0-9_-]*(?:\s+[A-Z][A-Za-z0-9_-]*)?)"
-    english_verb = r"(?:said|asked|replied|answered|warned|shouted|whispered)"
-    patterns = (
-        rf"{chinese_name}{chinese_modifier}{chinese_verb}\s*[:：,，]?\s*[“\"]{escaped}[”\"]",
-        rf"[“\"]{escaped}[”\"]\s*[,，]?\s*{chinese_name}{chinese_modifier}{chinese_verb}",
-        rf"{english_name}\s+{english_verb}\s*[:,]?\s*[“\"]{escaped}[”\"]",
-        rf"[“\"]{escaped}[”\"]\s*[,]\s*{english_name}\s+{english_verb}",
-    )
-    for pattern in patterns:
-        match = re.search(pattern, beat_text, re.I)
-        if match:
-            return str(match.group(1)).strip()
-    # Providers sometimes classify reported speech as dialogue without
-    # returning its explicit speaker. Resolve only a character name already
-    # grounded by source extraction and only when it is the grammatical
-    # subject of the attribution clause. Walking clauses backwards avoids
-    # mistaking an object in constructs such as "A looks at B, then says..."
-    # for the speaker.
+    # Never manufacture a name with a broad Chinese-text regex.  Only choose
+    # an entity already grounded by source extraction.
     names = sorted(
         {
             str(value).strip() for value in (candidate_names or [])
@@ -910,23 +1458,35 @@ def _infer_dialogue_speaker(
     )
     if not names or line not in beat_text:
         return ""
+    explicit = _explicit_script_speaker(beat_text)
+    if explicit in names:
+        return explicit
     line_offset = beat_text.find(line)
     prefix = beat_text[:line_offset]
-    report = re.search(
-        r"(?:说道|说|表示|告诉|告知|称|提到|解释|回答|答道|追问|反问|问道|问|"
-        r"询问|提醒|警告|补充|低语|开口道|道)\s*[:：,，]?\s*$",
-        prefix,
-    )
-    if not report:
-        return ""
-    attribution_prefix = prefix[:report.start()]
-    clauses = [value.strip() for value in re.split(r"[，,；;。！？!?]", attribution_prefix)]
-    for clause in reversed(clauses):
-        if not clause:
-            continue
+    reports = list(_SPEECH_VERBS.finditer(prefix))
+    if reports:
+        before_verb = prefix[:reports[-1].start()]
+        # "X 对 Y 说" attributes the utterance to X, while "X 听见 Y 说"
+        # attributes it to Y.  These explicit forms take precedence.
         for name in names:
-            if clause.startswith(name):
+            if re.search(rf"(?:^|[，,。！？!?])\s*{re.escape(name)}\s*对.+$", before_verb):
                 return name
+        heard = re.search(r"(?:听见|听到)([^，,。！？!?]*)$", before_verb)
+        if heard:
+            for name in names:
+                if name in heard.group(1):
+                    return name
+        clauses = [value.strip() for value in re.split(r"[，,；;。！？!?]", before_verb)]
+        for clause in reversed(clauses):
+            for name in names:
+                if clause.startswith(name):
+                    return name
+
+    # Postposed attribution: only return an already grounded candidate.
+    suffix = beat_text[line_offset + len(line):]
+    for name in names:
+        if re.search(rf"{re.escape(name)}[^。！？!?]{{0,12}}{_SPEECH_VERBS.pattern}", suffix):
+            return name
     return ""
 
 
@@ -958,6 +1518,10 @@ def _normalize_dialogue(
         # extraction object. Exact source grounding prevents that field drift.
         if not line or line not in beat_text:
             continue
+        if speaker in _NARRATION_LABELS or _quote_is_non_dialogue(beat_text, line):
+            continue
+        if candidate_names and speaker and speaker not in set(candidate_names):
+            speaker = ""
         if not speaker:
             speaker = _infer_dialogue_speaker(beat_text, line, candidate_names)
         key = (speaker, line)
@@ -1081,11 +1645,7 @@ def _build_source_model(chunks: list[str], analyses: list[dict] | None = None) -
         for sentence in _source_sentences(chunk):
             beat_id = f"beat_{len(beats) + 1:04d}"
             chunk_beat_ids.append(beat_id)
-            dialogue = _normalize_dialogue(_quoted_dialogue(sentence), sentence)
-            speakers = re.findall(
-                r"(?:^|[\n.!?\u3002\uff01\uff1f])\s*([A-Z][A-Za-z0-9_-]{0,30}|[\u4e00-\u9fff]{1,8})\s*[:\uff1a]",
-                sentence,
-            )
+            speakers = _attributed_source_speakers(sentence)
             for name in speakers:
                 clean = name.strip()
                 if clean and clean.casefold() not in entity_names:
@@ -1095,6 +1655,15 @@ def _build_source_model(chunks: list[str], analyses: list[dict] | None = None) -
                         "name": clean,
                         "kind": "character",
                     })
+            deterministic_dialogue = [
+                line for line in _quoted_dialogue(sentence)
+                if _looks_like_spoken_quote(sentence, line)
+            ]
+            dialogue = _normalize_dialogue(
+                deterministic_dialogue,
+                sentence,
+                [name.strip() for name in speakers if name.strip()],
+            )
             beats.append({
                 "beat_id": beat_id,
                 "chunk_id": chunk_index,
@@ -1151,6 +1720,8 @@ def _build_source_model(chunks: list[str], analyses: list[dict] | None = None) -
                     name = str(raw.get("name") or raw.get("entity") or "").strip()
                     kind = _entity_kind(raw.get("kind") or raw.get("type") or "entity")
                 else:
+                    continue
+                if kind == "character" and not _plausible_character_name(name):
                     continue
                 aliases = raw_payload.get("aliases", [])
                 if isinstance(aliases, str):
@@ -3135,6 +3706,50 @@ def _execute_tool_node(state: SupervisorState) -> dict:
     else:
         try:
             updates, result = TOOL_REGISTRY[action](state, args)
+        except ProviderCallOutcomeUnknown as exc:
+            updates = {
+                "status": "needs_review",
+                "stop_reason": "provider_call_outcome_unknown",
+                "next_action": {
+                    "action": MANUAL_IMPORT_RESPONSE,
+                    "call_id": exc.call_id,
+                    "reason": "request was dispatched but its result is unknown; import the acquired response or reconcile it manually",
+                },
+            }
+            result = {"ok": False, "error": "provider_call_outcome_unknown"}
+        except ProviderCallResponseEmpty as exc:
+            updates = {
+                "status": "needs_review",
+                "stop_reason": "provider_response_empty",
+                "next_action": {
+                    "action": MANUAL_IMPORT_RESPONSE,
+                    "call_id": exc.call_id,
+                    "reason": "HTTP succeeded but no text was returned; inspect the provider result before continuing",
+                },
+            }
+            result = {"ok": False, "error": "provider_response_empty"}
+        except ProviderCallNotDispatched as exc:
+            updates = {
+                "status": "needs_review",
+                "stop_reason": "provider_request_not_dispatched",
+                "next_action": {
+                    "action": MANUAL_CONFIRM_NOT_DISPATCHED,
+                    "call_id": exc.call_id,
+                    "reason": "confirm that no request was sent before authorizing one retry",
+                },
+            }
+            result = {"ok": False, "error": "provider_request_not_dispatched"}
+        except ProviderCallFailed as exc:
+            updates = {
+                "status": "needs_review",
+                "stop_reason": "provider_call_failed",
+                "next_action": {
+                    "action": MANUAL_IMPORT_RESPONSE,
+                    "call_id": exc.call_id,
+                    "reason": "provider returned a known failure; reconcile it manually before continuing",
+                },
+            }
+            result = {"ok": False, "error": "provider_call_failed"}
         except ModelBudgetExhausted:
             updates = {"status": "needs_review", "stop_reason": "budget_exhausted"}
             result = {"ok": False, "error": "budget_exhausted"}
@@ -3260,6 +3875,7 @@ def _manifest(state: SupervisorState, checkpoint_path: str) -> dict:
         "source_sha256": state.get("source_sha256", ""),
         "status": state.get("status", "unknown"),
         "stop_reason": state.get("stop_reason", ""),
+        "next_action": _safe_value(state.get("next_action", {})),
         "tool_steps": state.get("tool_steps", 0),
         "model_calls": _count_model_calls(state),
         "tool_counts": state.get("tool_counts", {}),

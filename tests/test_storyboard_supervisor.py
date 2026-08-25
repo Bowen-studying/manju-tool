@@ -1,7 +1,9 @@
 import json
 import os
 import tempfile
+import time
 import unittest
+from threading import Barrier, Event, Thread
 from unittest.mock import patch
 
 from click.testing import CliRunner
@@ -10,9 +12,13 @@ from manju.cli import cli
 from manju.pipeline.storyboard_schema import normalize_storyboard
 from manju.pipeline.storyboard_schema import validate_storyboard
 from manju.pipeline.storyboard_agent import _deterministic_quality_issues, _visible_characters
+from manju.utils.ai import LLMOutcomeUnknown
 from manju.pipeline.storyboard_supervisor import (
     ALLOWED_ACTIONS,
     _build_source_model,
+    _acquire_call_reservation_lock,
+    _call_text_cached,
+    _count_model_calls,
     _enrich_source_model_from_plan,
     _is_model_schema_claim,
     _normalize_model_issues,
@@ -25,7 +31,12 @@ from manju.pipeline.storyboard_supervisor import (
     _validate_action_args,
     calculate_agent_call_budget,
     generate_storyboard_agent,
+    ProviderCallOutcomeUnknown,
+    MANUAL_CONFIRM_NOT_DISPATCHED,
+    MANUAL_IMPORT_RESPONSE,
+    reconcile_model_call,
 )
+from manju.production.locking import ProjectLock
 from test_storyboard_agent import SOURCE, plan_response, shots_response
 
 
@@ -405,10 +416,8 @@ class StoryboardSupervisorTests(unittest.TestCase):
         self.assertEqual(update["pending_action"]["action"], "review_storyboard")
         self.assertIn("Code-required", update["pending_action"]["decision_summary"])
 
-    def test_empty_source_response_is_retried_but_never_cached_as_success(self):
-        responses = iter([action("analyze_source"), action("stop_needs_review", {
-            "reason": "source extraction unavailable",
-        })])
+    def test_empty_source_response_is_not_retried_and_enters_manual_gate(self):
+        responses = iter([action("analyze_source")])
 
         def provider(system, user, **kwargs):
             if system.startswith("SOURCE_MODEL_EXTRACTION_V2"):
@@ -425,7 +434,9 @@ class StoryboardSupervisorTests(unittest.TestCase):
             self.assertIsNone(result)
             manifest = self._manifest(root)
             self.assertEqual(manifest["status"], "needs_review")
-            self.assertEqual(manifest["model_calls"], 4)
+            self.assertEqual(manifest["stop_reason"], "provider_response_empty")
+            self.assertEqual(manifest["model_calls"], 2)
+            self.assertEqual(manifest["next_action"]["action"], "import_acquired_response")
             call_dir = os.path.join(
                 root, "stages", "agent",
                 next(name for name in os.listdir(os.path.join(root, "stages", "agent"))
@@ -436,9 +447,110 @@ class StoryboardSupervisorTests(unittest.TestCase):
                 if name.startswith("analyze_source_chunk_"):
                     with open(os.path.join(call_dir, name), encoding="utf-8") as handle:
                         source_records.append(json.load(handle))
-            self.assertEqual(len(source_records), 2)
-            self.assertTrue(all(item["status"] == "invalid_response" for item in source_records))
+            self.assertEqual(len(source_records), 1)
+            self.assertTrue(all(item["status"] == "empty_response" for item in source_records))
             self.assertTrue(all("response" not in item for item in source_records))
+
+    def test_unknown_network_outcome_stops_without_retry(self):
+        calls = []
+
+        def provider(system, user, **kwargs):
+            calls.append(system)
+            if len(calls) == 1:
+                return action("analyze_source")
+            raise LLMOutcomeUnknown("request outcome is unknown")
+
+        with tempfile.TemporaryDirectory() as root, patch(
+            "manju.pipeline.storyboard_supervisor.call_llm", side_effect=provider,
+        ):
+            result = generate_storyboard_agent(
+                SOURCE, "Mock Story", len(SOURCE), 1,
+                os.path.join(root, "stages", "agent"), root,
+            )
+            self.assertIsNone(result)
+            manifest = self._manifest(root)
+            self.assertEqual(manifest["stop_reason"], "provider_call_outcome_unknown")
+            self.assertEqual(manifest["model_calls"], 2)
+            self.assertEqual(manifest["next_action"]["action"], "import_acquired_response")
+            self.assertEqual(len(calls), 2)
+
+    def test_same_run_reservation_is_atomic_and_attempt_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = {"run_dir": root, "max_calls": 1}
+            provider_entered = Event()
+            release_provider = Event()
+            start = Barrier(2)
+            results = []
+            provider_calls = []
+
+            def provider(system, user, **kwargs):
+                provider_calls.append(system)
+                provider_entered.set()
+                release_provider.wait(5)
+                return action("stop_needs_review", {"reason": "race complete"})
+
+            def worker():
+                start.wait()
+                try:
+                    results.append(_call_text_cached(
+                        state, "race", "system", "user",
+                        max_tokens=32, temperature=0,
+                    ))
+                except Exception as exc:  # noqa: BLE001 - assert the typed loser below
+                    results.append(exc)
+
+            with patch(
+                "manju.pipeline.storyboard_supervisor.call_llm",
+                side_effect=provider,
+            ):
+                threads = [Thread(target=worker), Thread(target=worker)]
+                for thread in threads:
+                    thread.start()
+                self.assertTrue(provider_entered.wait(5))
+                deadline = time.monotonic() + 5
+                while len(results) < 1 and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                self.assertEqual(len(results), 1)
+                release_provider.set()
+                for thread in threads:
+                    thread.join(5)
+
+            self.assertEqual(len(provider_calls), 1)
+            self.assertEqual(len(results), 2)
+            self.assertEqual(
+                sum(isinstance(value, ProviderCallOutcomeUnknown) for value in results),
+                1,
+            )
+            self.assertEqual(
+                next(value.status for value in results if isinstance(value, ProviderCallOutcomeUnknown)),
+                "in_flight",
+            )
+            call_dir = os.path.join(root, "model_calls")
+            attempt_names = [
+                name for name in os.listdir(call_dir)
+                if name.startswith("race__attempt_") and name.endswith(".json")
+            ]
+            self.assertEqual(attempt_names, ["race__attempt_0001.json"])
+            with open(os.path.join(call_dir, attempt_names[0]), encoding="utf-8") as handle:
+                attempt = json.load(handle)
+            self.assertEqual(attempt["attempt"], 1)
+            self.assertEqual(attempt["status"], "complete")
+            self.assertEqual(
+                len([name for name in os.listdir(call_dir) if name.endswith(".json")]),
+                1,
+            )
+
+    def test_live_reservation_lock_is_never_deleted_on_timeout(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = {"run_dir": root, "max_calls": 1}
+            lock = ProjectLock(os.path.join(root, ".model_call_reservation.lock"), attempts=1)
+            lock.__enter__()
+            try:
+                with self.assertRaises(TimeoutError):
+                    _acquire_call_reservation_lock(state, timeout=0.05)
+                self.assertTrue(os.path.isfile(os.path.join(root, ".model_call_reservation.lock")))
+            finally:
+                lock.__exit__(None, None, None)
 
     def test_revision_does_not_start_without_audit_reserve(self):
         responses = [
@@ -663,6 +775,163 @@ class StoryboardSupervisorTests(unittest.TestCase):
         }])
         self.assertEqual(model["beats"][0]["dialogue"][0]["speaker"], "陈屿")
         self.assertEqual(model["integrity_errors"], [])
+
+    def test_dialogue_attribution_red_team_cases(self):
+        cases = [
+            ("李明对王芳说：“别回头。”", "别回头。", "李明"),
+            ("李明听见王芳说：“快走。”", "快走。", "王芳"),
+        ]
+        for source, line, expected in cases:
+            with self.subTest(source=source):
+                model = _build_source_model([source], [{
+                    "entities": [
+                        {"name": "李明", "kind": "character", "source_quote": "李明"},
+                        {"name": "王芳", "kind": "character", "source_quote": "王芳"},
+                    ],
+                    "beats": [{
+                        "source_quote": source,
+                        "dialogue": [{"speaker": "", "line": line}],
+                    }],
+                }])
+                self.assertEqual(model["beats"][0]["dialogue"], [
+                    {"speaker": expected, "line": line},
+                ])
+                self.assertEqual(model["integrity_errors"], [])
+
+    def test_model_call_reconciliation_is_explicit_and_audited(self):
+        with tempfile.TemporaryDirectory() as root:
+            state = {"run_dir": root, "max_calls": 1}
+            call_dir = os.path.join(root, "model_calls")
+            os.makedirs(call_dir)
+            unknown_path = os.path.join(call_dir, "call__attempt_0001.json")
+            with open(unknown_path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "call_id": "call", "attempt": 1, "status": "unknown",
+                    "dispatched": True,
+                }, handle)
+
+            event = reconcile_model_call(
+                state, "call", action=MANUAL_IMPORT_RESPONSE,
+                reviewer="tester", reason="provider result was obtained by request id",
+                response='{"ok": true}',
+            )
+            self.assertEqual(event["action"], MANUAL_IMPORT_RESPONSE)
+            with open(unknown_path, encoding="utf-8") as handle:
+                self.assertEqual(json.load(handle)["status"], "complete")
+            with open(os.path.join(call_dir, "reconciliations.jsonl"), encoding="utf-8") as handle:
+                self.assertEqual(len(handle.readlines()), 1)
+
+        with tempfile.TemporaryDirectory() as root:
+            state = {"run_dir": root, "max_calls": 1}
+            call_dir = os.path.join(root, "model_calls")
+            os.makedirs(call_dir)
+            path = os.path.join(call_dir, "call__attempt_0001.json")
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump({
+                    "call_id": "call", "attempt": 1, "status": "not_dispatched",
+                    "dispatched": False,
+                }, handle)
+            reconcile_model_call(
+                state, "call", action=MANUAL_CONFIRM_NOT_DISPATCHED,
+                reviewer="tester", reason="transport failed before request dispatch",
+            )
+            self.assertEqual(_count_model_calls(state), 0)
+
+            calls = []
+            with patch("manju.pipeline.storyboard_supervisor.call_llm", side_effect=lambda *a, **k: calls.append(1) or '{"ok": true}'):
+                self.assertEqual(
+                    _call_text_cached(
+                        state, "call", "system", "user", max_tokens=10, temperature=0,
+                    ),
+                    '{"ok": true}',
+                )
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(_count_model_calls(state), 1)
+
+    def test_script_colon_is_grounded_but_narration_and_written_quotes_are_not_dialogue(self):
+        script = _build_source_model(["阿宁：“谁在那里？”"])
+        self.assertEqual(script["beats"][0]["dialogue"], [
+            {"speaker": "阿宁", "line": "谁在那里？"},
+        ])
+        self.assertEqual(script["integrity_errors"], [])
+
+        narration = _build_source_model(["旁白：“冬天终于来了。”"])
+        written = _build_source_model(["“别回头。”这是日记最后一行。"])
+        self.assertEqual(narration["beats"][0]["dialogue"], [])
+        self.assertEqual(written["beats"][0]["dialogue"], [])
+        self.assertEqual(narration["integrity_errors"], [])
+        self.assertEqual(written["integrity_errors"], [])
+
+        written_prefix = _build_source_model(["日记中写道：“别回头。”"], [{
+            "entities": [{"name": "日记中写道", "kind": "character", "source_quote": "日记中写道"}],
+            "beats": [],
+        }])
+        narration_verb = _build_source_model(["旁白说道：“冬天终于来了。”"])
+        self.assertEqual(written_prefix["beats"][0]["dialogue"], [])
+        self.assertFalse(any(
+            entity.get("kind") == "character"
+            for entity in written_prefix["entities"]
+        ))
+        self.assertEqual(narration_verb["beats"][0]["dialogue"], [])
+
+    def test_phrase_shaped_provider_entities_cannot_become_characters(self):
+        for source, bad_name in [
+            ("李明对王芳说：“别回头。”", "李明对王芳"),
+            ("李明听见王芳说：“快走。”", "李明听见王芳"),
+        ]:
+            with self.subTest(source=source):
+                model = _build_source_model([source], [{
+                    "entities": [
+                        {"name": bad_name, "kind": "character", "source_quote": bad_name},
+                        {"name": "李明", "kind": "character", "source_quote": "李明"},
+                        {"name": "王芳", "kind": "character", "source_quote": "王芳"},
+                    ],
+                    "beats": [],
+                }])
+                self.assertNotIn(bad_name, {
+                    entity.get("name") for entity in model["entities"]
+                })
+
+    def test_postposed_attribution_stays_in_one_beat_and_does_not_invent_speaker(self):
+        source = "“快跑！”门外有人喊道。"
+        self.assertEqual(_source_sentences(source), [source])
+        model = _build_source_model([source], [{"beats": []}])
+        self.assertEqual(model["beats"][0]["dialogue"], [
+            {"speaker": "", "line": "快跑！"},
+        ])
+        self.assertEqual(model["integrity_errors"], [
+            "unresolved_dialogue_speaker:beat_0001",
+        ])
+
+    def test_nested_quote_is_one_outer_dialogue_and_s04_reported_quote_keeps_script_speaker(self):
+        nested = '李明说：“Tom shouted "Run!", then left.”'
+        outer = 'Tom shouted "Run!", then left.'
+        model = _build_source_model([nested], [{
+            "entities": [
+                {"name": "李明", "kind": "character", "source_quote": "李明"},
+                {"name": "Tom", "kind": "character", "source_quote": "Tom"},
+            ],
+            "beats": [{
+                "source_quote": nested,
+                "dialogue": [{"speaker": "李明", "line": outer}],
+            }],
+        }])
+        self.assertEqual(model["beats"][0]["dialogue"], [
+            {"speaker": "李明", "line": outer},
+        ])
+
+        s04 = "角色甲：他说——'明天见'，然后就走了。"
+        s04_model = _build_source_model([s04], [{
+            "entities": [{"name": "角色甲", "kind": "character", "source_quote": "角色甲"}],
+            "beats": [{
+                "source_quote": s04,
+                "dialogue": [{"speaker": "角色甲", "line": "他说——'明天见'，然后就走了。"}],
+            }],
+        }])
+        self.assertEqual(s04_model["beats"][0]["dialogue"], [
+            {"speaker": "角色甲", "line": "他说——'明天见'，然后就走了。"},
+        ])
+        self.assertEqual(s04_model["integrity_errors"], [])
 
     def test_review_projection_is_valid_json_and_keeps_the_final_shot(self):
         final_prompt = "最终镜头" + "细节" * 30000

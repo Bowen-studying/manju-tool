@@ -1,0 +1,767 @@
+{
+  "schema_version": "m7-blind-review-summary-v1",
+  "group_count": 19,
+  "reviewer_count": 3,
+  "scores_per_dimension": 57,
+  "seed": null,
+  "mapping": {
+    "01": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    },
+    "02": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "03": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    },
+    "04": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "05": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "06": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "07": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    },
+    "08": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    },
+    "09": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "10": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    },
+    "11": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "12": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "13": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "14": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "15": {
+      "A": "agent",
+      "B": "workflow",
+      "agent_side": "A",
+      "workflow_side": "B"
+    },
+    "16": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    },
+    "17": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    },
+    "18": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    },
+    "19": {
+      "A": "workflow",
+      "B": "agent",
+      "agent_side": "B",
+      "workflow_side": "A"
+    }
+  },
+  "winner_groups": {
+    "agent": [
+      "01",
+      "02",
+      "03",
+      "04",
+      "05",
+      "06",
+      "07",
+      "08",
+      "09",
+      "10",
+      "11",
+      "12",
+      "13",
+      "14",
+      "15",
+      "16",
+      "17",
+      "18",
+      "19"
+    ],
+    "workflow": [],
+    "tie": []
+  },
+  "winner_counts": {
+    "agent": 19,
+    "workflow": 0,
+    "tie": 0
+  },
+  "agent_win_rate": 1.0,
+  "serious_error_majority_groups": {
+    "agent": [
+      "06",
+      "13"
+    ],
+    "workflow": [
+      "02",
+      "03",
+      "05",
+      "06",
+      "09",
+      "10",
+      "11",
+      "12",
+      "14",
+      "16",
+      "19"
+    ]
+  },
+  "serious_error_majority_counts": {
+    "agent": 2,
+    "workflow": 11
+  },
+  "scores_by_anonymous_side": {
+    "A": {
+      "source_fidelity": {
+        "sum": 218,
+        "count": 57,
+        "mean": 3.824561
+      },
+      "shot_continuity": {
+        "sum": 190,
+        "count": 57,
+        "mean": 3.333333
+      },
+      "shootability": {
+        "sum": 229,
+        "count": 57,
+        "mean": 4.017544
+      },
+      "character_consistency": {
+        "sum": 234,
+        "count": 57,
+        "mean": 4.105263
+      }
+    },
+    "B": {
+      "source_fidelity": {
+        "sum": 209,
+        "count": 57,
+        "mean": 3.666667
+      },
+      "shot_continuity": {
+        "sum": 197,
+        "count": 57,
+        "mean": 3.45614
+      },
+      "shootability": {
+        "sum": 228,
+        "count": 57,
+        "mean": 4.0
+      },
+      "character_consistency": {
+        "sum": 237,
+        "count": 57,
+        "mean": 4.157895
+      }
+    }
+  },
+  "scores_by_decoded_engine": {
+    "agent": {
+      "source_fidelity": {
+        "sum": 266,
+        "count": 57,
+        "mean": 4.666667
+      },
+      "shot_continuity": {
+        "sum": 255,
+        "count": 57,
+        "mean": 4.473684
+      },
+      "shootability": {
+        "sum": 261,
+        "count": 57,
+        "mean": 4.578947
+      },
+      "character_consistency": {
+        "sum": 259,
+        "count": 57,
+        "mean": 4.54386
+      }
+    },
+    "workflow": {
+      "source_fidelity": {
+        "sum": 161,
+        "count": 57,
+        "mean": 2.824561
+      },
+      "shot_continuity": {
+        "sum": 132,
+        "count": 57,
+        "mean": 2.315789
+      },
+      "shootability": {
+        "sum": 196,
+        "count": 57,
+        "mean": 3.438596
+      },
+      "character_consistency": {
+        "sum": 212,
+        "count": 57,
+        "mean": 3.719298
+      }
+    }
+  },
+  "combined_scores_by_anonymous_side": {
+    "A": {
+      "sum": 871,
+      "count": 228,
+      "mean": 3.820175
+    },
+    "B": {
+      "sum": 871,
+      "count": 228,
+      "mean": 3.820175
+    }
+  },
+  "combined_scores_by_decoded_engine": {
+    "agent": {
+      "sum": 1041,
+      "count": 228,
+      "mean": 4.565789
+    },
+    "workflow": {
+      "sum": 701,
+      "count": 228,
+      "mean": 3.074561
+    }
+  },
+  "groups": {
+    "01": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 1,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": false
+      }
+    },
+    "02": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 2
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": true
+      }
+    },
+    "03": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 3,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": true,
+        "B": false
+      }
+    },
+    "04": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 1
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": false
+      }
+    },
+    "05": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 2
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": true
+      }
+    },
+    "06": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 2,
+        "B": 3
+      },
+      "serious_error_majority": {
+        "A": true,
+        "B": true
+      }
+    },
+    "07": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 1,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": false
+      }
+    },
+    "08": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 1,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": false
+      }
+    },
+    "09": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 3
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": true
+      }
+    },
+    "10": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 3,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": true,
+        "B": false
+      }
+    },
+    "11": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 3
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": true
+      }
+    },
+    "12": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 3
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": true
+      }
+    },
+    "13": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 2,
+        "B": 1
+      },
+      "serious_error_majority": {
+        "A": true,
+        "B": false
+      }
+    },
+    "14": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 3
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": true
+      }
+    },
+    "15": {
+      "mapping": {
+        "A": "agent",
+        "B": "workflow",
+        "agent_side": "A",
+        "workflow_side": "B"
+      },
+      "winner_side": "A",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 3,
+        "B": 0,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": false
+      }
+    },
+    "16": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 2,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": true,
+        "B": false
+      }
+    },
+    "17": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": false
+      }
+    },
+    "18": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 0,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": false,
+        "B": false
+      }
+    },
+    "19": {
+      "mapping": {
+        "A": "workflow",
+        "B": "agent",
+        "agent_side": "B",
+        "workflow_side": "A"
+      },
+      "winner_side": "B",
+      "winner_engine": "agent",
+      "preference_votes": {
+        "A": 0,
+        "B": 3,
+        "tie": 0
+      },
+      "serious_error_votes": {
+        "A": 3,
+        "B": 0
+      },
+      "serious_error_majority": {
+        "A": true,
+        "B": false
+      }
+    }
+  },
+  "source_files": [
+    {
+      "role": "mapping",
+      "path": "manju-m7-盲评定稿与A-B映射-20260825.md",
+      "sha256": "90e7c1b1c9e455835e362b3c3f1876124a298c16adf003fecf74f8fe0e04b9f4"
+    },
+    {
+      "role": "reviewer_1",
+      "path": "盲评_评委1_内容编剧.md",
+      "sha256": "d86ca63063258c3342ae262948b236923c694378e88f1d5462795d90a76014db"
+    },
+    {
+      "role": "reviewer_2",
+      "path": "盲评_评委2_分镜制作.md",
+      "sha256": "92a8c10f1d956a156bffe963ce69d0cfdb9f05f62ec333546f6b251b6279b51b"
+    },
+    {
+      "role": "reviewer_3",
+      "path": "盲评_评委3_普通用户.md",
+      "sha256": "436b3e9948c21f43721b4d6510c8e415a380c3598adee8512846b1ca1bbd6982"
+    },
+    {
+      "role": "human_summary_reference",
+      "path": "M7分镜盲评汇总_20260825.md",
+      "sha256": "35f9f1b0464d2dc4587b8d57e2c12ef4996bf0ba450454befdc0f429c1504984"
+    }
+  ],
+  "source_file_hashes": {
+    "mapping": "90e7c1b1c9e455835e362b3c3f1876124a298c16adf003fecf74f8fe0e04b9f4",
+    "reviewer_1": "d86ca63063258c3342ae262948b236923c694378e88f1d5462795d90a76014db",
+    "reviewer_2": "92a8c10f1d956a156bffe963ce69d0cfdb9f05f62ec333546f6b251b6279b51b",
+    "reviewer_3": "436b3e9948c21f43721b4d6510c8e415a380c3598adee8512846b1ca1bbd6982",
+    "human_summary_reference": "35f9f1b0464d2dc4587b8d57e2c12ef4996bf0ba450454befdc0f429c1504984"
+  },
+  "note": "A10/B9 is the original anonymous-side summary; decoded winners are computed from the mapping and raw reviewer rows."
+}

@@ -1,4 +1,5 @@
 import base64
+from contextlib import redirect_stderr
 import io
 import json
 import os
@@ -84,6 +85,40 @@ class RuntimeTests(unittest.TestCase):
                  error, FakeResponse({"choices": [{"message": {"content": "ok"}}]})
              ]):
             self.assertEqual(ai.call_llm("s", "u", retries=1), "ok")
+
+    def test_llm_outcomes_are_typed_and_empty_is_not_none(self):
+        with patch("manju.utils.ai.get_ai_config", return_value=(None, None, None)):
+            with self.assertRaises(ai.LLMRequestNotDispatched):
+                ai.call_llm("s", "u", retries=0)
+
+        with patch("manju.utils.ai.get_ai_config", return_value=("https://host", "m", "k")), \
+             patch("manju.utils.ai.urllib.request.urlopen", return_value=FakeResponse({
+                 "choices": [{"message": {"content": ""}}],
+             })):
+            with self.assertRaises(ai.LLMResponseEmpty):
+                ai.call_llm("s", "u", retries=0)
+
+        with patch("manju.utils.ai.get_ai_config", return_value=("https://host", "m", "k")), \
+             patch("manju.utils.ai.urllib.request.urlopen", side_effect=urllib.error.URLError(
+                 "timeout after Bearer k")):
+            with self.assertRaises(ai.LLMOutcomeUnknown):
+                ai.call_llm("s", "u", retries=0)
+
+    def test_llm_stderr_redacts_keys_bearer_and_signed_query_values(self):
+        error = urllib.error.HTTPError(
+            "https://host/callback?sig=query-secret", 400, "bad", {},
+            io.BytesIO(b'{"api_key":"configured-secret", "authorization":"Bearer configured-secret", "sig":"body-secret"}'),
+        )
+        stderr = io.StringIO()
+        with patch("manju.utils.ai.get_ai_config", return_value=(
+            "https://host/callback?sig=query-secret", "m", "configured-secret",
+        )), patch("manju.utils.ai.urllib.request.urlopen", side_effect=error), \
+             redirect_stderr(stderr):
+            with self.assertRaises(ai.LLMHTTPError):
+                ai.call_llm("s", "u", retries=0)
+        output = stderr.getvalue()
+        for secret in ("configured-secret", "body-secret", "query-secret"):
+            self.assertNotIn(secret, output)
 
 
 class ImageApiTests(unittest.TestCase):

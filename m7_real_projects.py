@@ -3,7 +3,7 @@
 
 Projects:
   r01: paid SiliconFlow TTS (real), single-role, low quota
-  r02: paid SiliconFlow TTS (real), two voices, low quota
+  r02: paid SiliconFlow TTS (real), voice-map assertion, low quota
   r03: paid async Agnes video (real), 81 frames
   r04: paid async video (mock) budget-bounded run
   r05: paid Agnes image visual (real)
@@ -29,7 +29,8 @@ import sys
 import tempfile
 import time
 
-sys.path.insert(0, r"C:\Users\18821\Documents\Codex\2026-07-10\new-chat-3\manju-tool")
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, ROOT_DIR)
 
 from manju.production.adapters.video import VideoStageAdapter
 from manju.production.adapters.video_prompt import VideoPromptStageAdapter
@@ -61,7 +62,26 @@ VIDEO_REQUEST = {"model": "ag" + "nes-video-v2.0", "num_frames": 81, "frame_rate
 IMAGE_REQUEST = {"model": "agnes-image-2.1-flash", "size": "1024x1024", "response_format": "url",
                 "prompt": "根据分镜绘制漫画场景"}
 
-EVENTS_DIR = r"C:\Users\18821\Documents\Codex\2026-07-10\new-chat-3\manju-tool\m7_evidence"
+_evidence_dir = os.environ.get("M7_EVIDENCE_DIR", os.path.join(ROOT_DIR, "m7_evidence"))
+EVENTS_DIR = _evidence_dir if os.path.isabs(_evidence_dir) else os.path.join(ROOT_DIR, _evidence_dir)
+
+R02_VOICE_MAP = {
+    "A": "FunAudioLLM/CosyVoice2-0.5B:alex",
+    "narrator": "FunAudioLLM/CosyVoice2-0.5B:anna",
+    "unknown": "FunAudioLLM/CosyVoice2-0.5B:anna",
+}
+
+
+class RecordingTtsProvider:
+    """Records public voice requests without recording credentials or text."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.requests: list[str] = []
+
+    def synthesize_cue(self, *, text, idempotency_key, request):
+        self.requests.append(str(request.get("voice", "")))
+        return self.inner.synthesize_cue(text=text, idempotency_key=idempotency_key, request=request)
 
 
 def _agencies() -> dict[str, str]:
@@ -77,6 +97,9 @@ def _tts_service(work_dir: str, voices: dict[str, str] | None = None):
     with open(source, "w", encoding="utf-8") as handle:
         handle.write("夜晚的城市灯火通明，他站在窗前，沉默了很久。")
     project = os.path.join(work_dir, "project")
+    request = dict(TTS_REQUEST)
+    if voices:
+        request["voice_map"] = dict(voices)
     initialize_project(
         source=source, source_type="script", output_dir=project, engine="agent",
         voice_script_enabled=True, voice_director_enabled=True,
@@ -84,18 +107,18 @@ def _tts_service(work_dir: str, voices: dict[str, str] | None = None):
         voice_tts_model_profile="siliconflow-cosyvoice2",
         voice_tts_maximum_amount=str(TTS_MAX_TOTAL_AMOUNT_MINOR),
         voice_tts_provider_profile="siliconflow-cosyvoice2",
-        voice_tts_provider_request=dict(TTS_REQUEST),
+        voice_tts_provider_request=request,
         hmac_key_id="test-key",
     )
-    provider = SiliconFlowTtsProvider(
+    provider = RecordingTtsProvider(SiliconFlowTtsProvider(
         model="FunAudioLLM/CosyVoice2-0.5B",
-        voice="FunAudioLLM/CosyVoice2-0.5B:alex",
+        voice=request["voice"],
         response_format="wav", sample_rate=16000, timeout_seconds=90,
-    )
+    ))
     service = ProductionService(
         os.path.join(project, "project.json"), storyboard_adapter=FixtureStoryboardAdapter(),
         voice_tts_adapter=VoiceTTSStageAdapter(mode="paid_siliconflow", tts_provider=provider,
-                                               provider_request=dict(TTS_REQUEST),
+                                               provider_request=request,
                                                provider_profile="siliconflow-cosyvoice2"),
         hmac_key_provider=MappingHmacKeyProvider({"test-key": KEY}),
     )
@@ -312,20 +335,26 @@ def scenario_r01(work_dir):
 
 
 def scenario_r02(work_dir):
-    """Real TTS two voices: both speakers rendered, settled amount bounded."""
+    """Real TTS: calls complete and a future run verifies the voice map."""
     if not _agencies()["siliconflow"]:
         return {"status": "pending", "reason": "SILICONFLOW_API_KEY not available; real TTS not exercised"}
-    service, provider = _tts_service(work_dir)
+    service, provider = _tts_service(work_dir, voices=R02_VOICE_MAP)
     awaiting = _advance_to_approval(service)
     _approve_and_grant(service, awaiting, "approval-")
     snap = _run_till(service, {"completed", "failed"})
     events = service.store.events.read()
     settled = [e for e in events if e["event_type"] == "call_settled"]
     amounts = [int((e.get("payload") or {}).get("usage", {}).get("actual_amount", "0")) for e in settled]
+    observed_voices = list(provider.requests)
+    expected_voices = set(R02_VOICE_MAP.values())
+    voice_map_verified = len(set(observed_voices)) >= 2 and expected_voices.issubset(set(observed_voices))
     return {"status": snap.status, "settled_count": len(settled),
             "total_spent_minor": sum(amounts),
             "within_quota": sum(amounts) <= int(TTS_MAX_TOTAL_AMOUNT_MINOR),
-            "currency": (settled[0].get("payload", {}).get("usage", {}).get("currency", "") if settled else "")}
+            "currency": (settled[0].get("payload", {}).get("usage", {}).get("currency", "") if settled else ""),
+            "observed_voices": observed_voices,
+            "distinct_voice_count": len(set(observed_voices)),
+            "voice_map_verified": voice_map_verified}
 
 
 def scenario_r03(work_dir):

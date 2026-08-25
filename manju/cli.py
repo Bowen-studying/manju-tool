@@ -712,9 +712,9 @@ def create(title, genre, premise, protagonist, conflict, world_rules,
               help="目标场景数（1-8，默认按字数自动决定）")
 @click.option("--image-api/--no-image-api", default=False,
               help="逐镜生图 (需配置生图API)")
-@click.option("--resume/--no-resume", default=True,
-              help="从相同源文件的已完成阶段续跑")
-@click.option("--engine", type=click.Choice(["legacy", "workflow", "agent"]), default="legacy",
+@click.option("--resume/--no-resume", default=False,
+              help="显式从相同源文件的已完成阶段续跑；默认不恢复旧输出目录")
+@click.option("--engine", type=click.Choice(["legacy", "workflow", "agent"]), default="agent",
               show_default=True, help="分镜编排引擎")
 @click.option("--image-engine", type=click.Choice(["legacy", "agent"]), default="legacy",
               show_default=True, help="图片生成引擎")
@@ -1294,11 +1294,11 @@ def speak(text, voice, speed, pitch, volume, output_dir, name, batch_file):
               help="生图")
 @click.option("--render-videos/--no-render-videos", default=False,
               help="按镜头调用视频API生成视频素材（可能产生费用）")
-@click.option("--resume/--no-resume", default=True,
-              help="续跑相同输入的分镜阶段与素材缓存")
+@click.option("--resume/--no-resume", default=False,
+              help="显式续跑相同输入的分镜阶段与素材缓存；默认不恢复旧输出目录")
 @click.option("--max-scenes", type=int, default=None,
               help="目标场景数（1-8）")
-@click.option("--engine", type=click.Choice(["legacy", "workflow", "agent"]), default="legacy",
+@click.option("--engine", type=click.Choice(["legacy", "workflow", "agent"]), default="agent",
               show_default=True, help="分镜编排引擎")
 @click.option("--image-engine", type=click.Choice(["legacy", "agent"]), default="legacy",
               show_default=True, help="图片生成引擎")

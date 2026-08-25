@@ -22,6 +22,77 @@ from manju.utils.runtime import join_api_url
 _AI_CONFIG = None
 
 
+_SENSITIVE_FIELD_RE = re.compile(
+    r"(?i)(?P<prefix>['\"]?(?:api[_-]?key|access[_-]?key|secret|token|"
+    r"access[_-]?token|refresh[_-]?token|password|passwd|authorization|"
+    r"signature|sig)['\"]?\s*[:=]\s*['\"]?)(?P<value>[^'\"\s,;&}]+)"
+)
+_BEARER_RE = re.compile(r"(?i)(\bbearer\s+)[^\s,;\]}\)]+")
+_SIGNED_QUERY_RE = re.compile(
+    r"(?i)([?&](?:sig|signature|x-amz-signature|x-goog-signature|"
+    r"token|access_token|api_key|apikey)=)[^&#\s]+"
+)
+
+
+def redact_sensitive_text(text: object, secrets: tuple[object, ...] = ()) -> str:
+    """Redact credentials from provider errors before they reach stderr/artifacts."""
+    value = str(text)
+    for secret in secrets:
+        candidate = str(secret or "")
+        if candidate:
+            value = value.replace(candidate, "[REDACTED]")
+    value = _BEARER_RE.sub(r"\1[REDACTED]", value)
+    value = _SIGNED_QUERY_RE.sub(r"\1[REDACTED]", value)
+    value = _SENSITIVE_FIELD_RE.sub(r"\g<prefix>[REDACTED]", value)
+    return value
+
+
+class LLMCallError(RuntimeError):
+    """Base class for provider outcomes that must not be represented by None."""
+
+    kind = "provider_error"
+    dispatched = False
+
+    def __init__(self, message: str, *, detail: object = ""):
+        self.detail = redact_sensitive_text(detail or message)
+        super().__init__(redact_sensitive_text(message))
+
+
+class LLMRequestNotDispatched(LLMCallError):
+    """No provider request was sent, normally because configuration is absent."""
+
+    kind = "not_dispatched"
+    dispatched = False
+
+
+class LLMResponseEmpty(LLMCallError):
+    """The provider returned a successful HTTP response without usable text."""
+
+    kind = "empty_response"
+    dispatched = True
+
+
+class LLMOutcomeUnknown(LLMCallError):
+    """The request handoff happened, but its final provider outcome is unknown."""
+
+    kind = "outcome_unknown"
+    dispatched = True
+
+
+class LLMHTTPError(LLMCallError):
+    """The provider returned a known non-success HTTP status."""
+
+    kind = "http_error"
+    dispatched = True
+
+
+class LLMResponseInvalid(LLMCallError):
+    """The provider completed an HTTP response that was not usable JSON."""
+
+    kind = "invalid_response"
+    dispatched = True
+
+
 def reset_ai_config() -> None:
     """Clear cached credentials for long-running processes and tests."""
     global _AI_CONFIG
@@ -65,12 +136,17 @@ def get_ai_config():
 def _extract_llm_text(result: dict) -> str | None:
     choices = result.get("choices")
     if isinstance(choices, list) and choices:
-        content = choices[0].get("message", {}).get("content")
+        first = choices[0] if isinstance(choices[0], dict) else {}
+        content = first.get("message", {}).get("content")
         if isinstance(content, str):
             return content
         if isinstance(content, list):
-            parts = [item.get("text", "") for item in content if isinstance(item, dict)]
-            return "".join(parts) or None
+            parts = [
+                str(item.get("text", ""))
+                for item in content
+                if isinstance(item, dict) and item.get("text") is not None
+            ]
+            return "".join(parts)
     output_text = result.get("output_text")
     if isinstance(output_text, str):
         return output_text
@@ -80,16 +156,25 @@ def _extract_llm_text(result: dict) -> str | None:
 def call_llm(system_prompt: str, user_content: str,
              max_tokens: int = 16000, temperature: float = 0.4,
              retries: int = 2, timeout: int = 180) -> str | None:
-    """Generic LLM call via urllib. Returns response text or None on failure."""
+    """Call an OpenAI-compatible endpoint with typed provider outcomes.
+
+    ``None`` is retained only in the return annotation for compatibility with
+    older callers; configured calls either return non-empty text or raise a
+    typed ``LLMCallError``.  In particular, an empty successful response is
+    not interchangeable with a missing configuration or an uncertain request.
+    """
     api_url, model, api_key = get_ai_config()
     if not api_key or not api_url:
-        print("   ⚠ 未配置LLM API "
-              "(设置 LLM_API_KEY + LLM_API_BASE + LLM_MODEL)", file=sys.stderr)
-        return None
+        message = (
+            "未配置LLM API (设置 LLM_API_KEY + LLM_API_BASE + LLM_MODEL)"
+        )
+        print(f"   ⚠ {message}", file=sys.stderr)
+        raise LLMRequestNotDispatched(message)
 
     if not model:
-        print("   ⚠ LLM model 未配置 (设置 LLM_MODEL)", file=sys.stderr)
-        return None
+        message = "LLM model 未配置 (设置 LLM_MODEL)"
+        print(f"   ⚠ {message}", file=sys.stderr)
+        raise LLMRequestNotDispatched(message)
 
     payload = json.dumps({
         "model": model,
@@ -105,36 +190,51 @@ def call_llm(system_prompt: str, user_content: str,
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     })
+    retries = max(0, int(retries))
     for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                result = json.loads(resp.read().decode())
+                body = resp.read().decode(errors="replace")
+            try:
+                result = json.loads(body)
+            except (json.JSONDecodeError, TypeError, UnicodeError) as exc:
+                message = "LLM returned an invalid JSON response"
+                safe_detail = redact_sensitive_text(body[:500], (api_key,))
+                print(f"   ⚠ {message}: {safe_detail}", file=sys.stderr)
+                raise LLMResponseInvalid(message, detail=safe_detail) from exc
             text = _extract_llm_text(result)
-            if text:
+            if isinstance(text, str) and text.strip():
                 return text
-            print("   ⚠ LLM 响应缺少文本内容", file=sys.stderr)
-            return None
+            message = "LLM 响应缺少文本内容"
+            print(f"   ⚠ {message}", file=sys.stderr)
+            raise LLMResponseEmpty(message)
         except urllib.error.HTTPError as e:
             try:
                 body = e.read().decode(errors="replace")[:500]
             except Exception:
                 body = ""
+            safe_body = redact_sensitive_text(body, (api_key,))
             retryable = e.code == 429 or e.code >= 500
-            print(f"   ⚠ LLM HTTP {e.code}: {body}", file=sys.stderr)
+            print(f"   ⚠ LLM HTTP {e.code}: {safe_body}", file=sys.stderr)
             if not retryable or attempt >= retries:
-                return None
+                message = f"LLM HTTP {e.code}"
+                raise LLMHTTPError(message, detail=safe_body) from e
         except urllib.error.URLError as e:
-            print(f"   ⚠ LLM 网络错误: {e.reason}", file=sys.stderr)
+            safe_reason = redact_sensitive_text(e.reason, (api_key,))
+            print(f"   ⚠ LLM 网络错误: {safe_reason}", file=sys.stderr)
             if attempt >= retries:
-                return None
-        except (json.JSONDecodeError, KeyError, TypeError, OSError) as e:
-            print(f"   ⚠ LLM 调用失败: {e}", file=sys.stderr)
+                message = "LLM request outcome is unknown after network error"
+                raise LLMOutcomeUnknown(message, detail=safe_reason) from e
+        except (TimeoutError, OSError) as e:
+            safe_error = redact_sensitive_text(e, (api_key,))
+            print(f"   ⚠ LLM 调用失败: {safe_error}", file=sys.stderr)
             if attempt >= retries:
-                return None
+                message = "LLM request outcome is unknown after transport error"
+                raise LLMOutcomeUnknown(message, detail=safe_error) from e
         wait = 2 ** attempt
         print(f"   ↻ {wait}s 后重试 ({attempt + 1}/{retries})")
         time.sleep(wait)
-    return None
+    raise LLMOutcomeUnknown("LLM request outcome is unknown")
 
 
 # ── JSON parsing ───────────────────────────────────────────────────────────────

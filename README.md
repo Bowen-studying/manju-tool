@@ -9,7 +9,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![Version](https://img.shields.io/badge/Version-0.6.0-F59E0B)](#)
 [![License](https://img.shields.io/badge/License-MIT-22C55E)](LICENSE)
-[![Tests](https://img.shields.io/badge/Tests-268%20passed-14B8A6)](#验证与文档)
+[![Tests](https://img.shields.io/badge/Tests-see%20M7%20report-14B8A6)](#验证与文档)
 
 **适合小说作者、短视频创作者、编剧和 AI 内容制作团队。**
 
@@ -451,11 +451,12 @@ manju speak "快跑！" --speed 1.4 --pitch 7 --volume 8
 | 选项 | 含义 |
 |---|---|
 | `-o 路径` | 指定输出文件夹 |
-| `--resume` | 复用已完成阶段和未变化素材 |
+| `--resume` | 显式复用已完成阶段和未变化素材；默认不恢复旧输出目录 |
 | `--max-scenes 数量` | 指定目标场景数 |
-| `--engine workflow` | 使用冻结的 LangGraph v6 固定流程，便于对照 |
-| `--engine agent` | 使用主管 Agent 自主选择分镜工具，并保存 SQLite 检查点与行动轨迹 |
-| `--image-engine agent` | 使用审批驱动的图像主管 Agent；默认仍为 `legacy` |
+| `--engine legacy` | 显式使用兼容的旧版分镜流程 |
+| `--engine workflow` | 显式使用冻结的 LangGraph v6 固定流程，便于对照 |
+| `--engine agent` | 使用主管 Agent 自主选择分镜工具；`storyboard` 与 `pipeline` 默认使用它，并保存 SQLite 检查点与行动轨迹 |
+| `--image-engine agent` | 使用审批驱动的图像主管 Agent；图片阶段仍默认关闭，且默认引擎仍为 `legacy` |
 | `--agent-max-steps 数量` | 主管 Agent 工具步骤预算，默认 40 |
 | `--agent-max-calls auto\|数量` | 主管 Agent 模型调用预算；默认 `auto`，按场景数、分块数和修订闭环计算（通常 20–36），可显式填写更高正整数 |
 | `--agent-max-revisions 数量` | 每场定向修订上限，默认 2 |
@@ -473,7 +474,10 @@ manju storyboard --help
 manju image --help
 ```
 
-LangGraph 当前是本地试验引擎，默认仍使用原有 `legacy` 流程。低成本试跑示例：
+分镜 CLI 的 `storyboard` 与 `pipeline` 默认使用 Agent。需要兼容旧版实现时显式指定
+`--engine legacy`，需要冻结的 LangGraph v6 对照流程时显式指定 `--engine workflow`。
+图片、配音音频和视频生成仍需分别显式启用 `--image-api`、`--speak` 或
+`--render-videos`。低成本试跑示例：
 
 ```bash
 manju storyboard "sample_story.txt" --engine agent --max-scenes 1 -o demo_output
@@ -600,7 +604,7 @@ manju pipeline --novel "小说.txt" -o "D:\我的项目\第一集"
 
 ## 📚 验证与文档
 
-本版本已通过 42 项自动测试，覆盖：
+测试数量会随代码和平台变化，不把某个历史固定数量当作当前版本承诺。验证范围包括：
 
 - 长文本处理和结尾保留
 - 多阶段分镜与断点续跑
@@ -609,6 +613,9 @@ manju pipeline --novel "小说.txt" -o "D:\我的项目\第一集"
 - 同步及异步视频任务恢复
 - Excel、Word、PDF 和使用指南导出
 - 上传内容、隐私声明和输出规范检查
+
+M7 最终发布验收、解盲结果和复现边界见
+[`docs/PRODUCTION_RUN_M7_FINAL_ACCEPTANCE.md`](docs/PRODUCTION_RUN_M7_FINAL_ACCEPTANCE.md)。当前候选的精确 Windows/Linux 测试结果记录在该报告中；dirty 候选结果与历史 clean-commit 证据分开陈述。
 
 本地验证：
 
