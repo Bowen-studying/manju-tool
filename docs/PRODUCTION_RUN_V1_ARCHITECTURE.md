@@ -430,9 +430,9 @@ service.subscribe(project_id, listener)
 
 ## 18. 默认引擎与发布策略
 
-新 `manju project init` 推荐 `audited-agent` 配置：分镜 Agent + 图像 Agent。旧 CLI 的默认引擎暂不改变。
+新 `manju project init` 使用 `audited-agent` 配置。分镜 Agent 已完成 M7 固定评测和人工盲评，现为 `storyboard` 与 `pipeline` 的默认分镜引擎；`legacy` 和冻结的 `workflow` 继续作为显式兼容与对照路径。
 
-图像 Agent 可作为新 ProductionRun 项目的默认图片引擎。分镜 Agent 必须完成固定评测集并达到发布门槛后，才能替换旧 CLI 全局默认。
+图像阶段仍需显式启用，旧 CLI 的默认图片引擎仍为 `legacy`。图像 Agent 完成独立视觉质量评测并达到后续发布门槛后，才能升级为新项目的推荐图片引擎。
 
 顶层使用普通 Python reducer、DAG 和调度器。LangGraph 只保留在确实需要 Agent 推理的子阶段。
 
@@ -461,3 +461,5 @@ service.subscribe(project_id, listener)
 7. 固定评测集、真实 API 冒烟和跨平台发布验收。
 
 M1 的具体边界和测试清单见 `docs/PRODUCTION_RUN_M1_ACCEPTANCE.md`。
+
+M7 之后的创作层 Agent 化顺序、质量门槛和红队要求见 `docs/AGENTIZATION_NEXT_PHASE_PLAN.md`。
