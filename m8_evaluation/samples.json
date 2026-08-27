@@ -1,0 +1,2124 @@
+{
+  "schema_version": "m8-visual-sample-manifest-v1",
+  "status": "frozen_scope_not_executed",
+  "contract_fingerprint": "sha256:6bb9f8d602a4e57708e8dab8db8b4a49b191f75febe84906f51dc469b119c165",
+  "source": {
+    "manifest_ref": "m7_samples/manifest.json",
+    "manifest_sha256": "afaf7ce415a5f00c571b2a52dcfd71a40dd8cea3ba298be3aafc9655d5f5bc23",
+    "sample_root_ref": "m7_samples"
+  },
+  "minimums": {
+    "stories": 20,
+    "scene_groups": 60
+  },
+  "story_count": 20,
+  "scene_group_count": 60,
+  "coverage_catalog": [
+    {
+      "code": "multi_character",
+      "label": "多人关系",
+      "requirement": "至少一个组必须同时呈现两名或以上可区分人物及其空间关系。"
+    },
+    {
+      "code": "duplicate_name_identity",
+      "label": "重名与身份",
+      "requirement": "至少一个组必须能核对重名角色的身份、数量和指代，不能靠名字猜测。"
+    },
+    {
+      "code": "wardrobe_continuity",
+      "label": "服装连续性",
+      "requirement": "跨相邻镜头核对服装、发型和可见状态；变化必须有来源依据。"
+    },
+    {
+      "code": "key_prop_continuity",
+      "label": "关键道具",
+      "requirement": "核对道具身份、数量、状态、空间位置和必要的相对尺度。"
+    },
+    {
+      "code": "day_night_transition",
+      "label": "昼夜变化",
+      "requirement": "跨场景或相邻镜头核对昼夜、光线和时间状态，不允许无来源跳变。"
+    },
+    {
+      "code": "action_continuity",
+      "label": "动作连续性",
+      "requirement": "核对动作发生顺序、前后状态和因果关系，尤其是关键动作。"
+    },
+    {
+      "code": "complex_composition",
+      "label": "复杂构图",
+      "requirement": "覆盖前后景、遮挡、多人站位或多个关键物体的可制作构图。"
+    },
+    {
+      "code": "single_character_baseline",
+      "label": "单人基线",
+      "requirement": "提供低复杂度基线，用来区分复杂场景收益与基本生成稳定性。"
+    },
+    {
+      "code": "silent_action",
+      "label": "无对白动作",
+      "requirement": "不依赖对白，单独核对视觉动作和情绪表达。"
+    },
+    {
+      "code": "text_boundary",
+      "label": "文字边界",
+      "requirement": "精确文字有要求时核对可读性；无要求时不得把乱码当作来源事实。"
+    },
+    {
+      "code": "legacy_compatibility",
+      "label": "旧路径兼容",
+      "requirement": "至少一组来自旧 storyboard 输入，核对旧格式映射和可比较产物。"
+    },
+    {
+      "code": "unverifiable_gate",
+      "label": "不可验证门",
+      "requirement": "至少一组保留证据不足时进入人工门的路径，不用规则检查冒充审美通过。"
+    }
+  ],
+  "coverage_counts": {
+    "multi_character": 8,
+    "duplicate_name_identity": 6,
+    "wardrobe_continuity": 6,
+    "key_prop_continuity": 6,
+    "day_night_transition": 6,
+    "action_continuity": 8,
+    "complex_composition": 6,
+    "single_character_baseline": 4,
+    "silent_action": 2,
+    "text_boundary": 4,
+    "legacy_compatibility": 2,
+    "unverifiable_gate": 2
+  },
+  "stories": [
+    {
+      "story_id": "story-01",
+      "source_sample_id": "s01-short-dialogue",
+      "kind": "script",
+      "source_ref": "m7_samples/s01_short_dialogue.txt",
+      "source_sha256": "a04def2bb313b6df9bad307b0cfd9db3261842c2e3356c8a6ca558025d95effc",
+      "source_bytes": 166,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-01-group-01",
+        "story-01-group-02",
+        "story-01-group-03"
+      ]
+    },
+    {
+      "story_id": "story-02",
+      "source_sample_id": "s02-monologue",
+      "kind": "script",
+      "source_ref": "m7_samples/s02_monologue.txt",
+      "source_sha256": "a7529cb067d89de9ae8e88e8bfcc59b8411800ea67f4efda46529c14e425575e",
+      "source_bytes": 193,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-02-group-01",
+        "story-02-group-02",
+        "story-02-group-03"
+      ]
+    },
+    {
+      "story_id": "story-03",
+      "source_sample_id": "s03-silent-action",
+      "kind": "script",
+      "source_ref": "m7_samples/s03_silent_action.txt",
+      "source_sha256": "f705fde98fde028e07c9b4f592e861ecb0c28a181b633ad76ea99166870ff0f1",
+      "source_bytes": 202,
+      "expected_stage": "visual",
+      "scene_group_ids": [
+        "story-03-group-01",
+        "story-03-group-02",
+        "story-03-group-03"
+      ]
+    },
+    {
+      "story_id": "story-04",
+      "source_sample_id": "s04-special-chars",
+      "kind": "script",
+      "source_ref": "m7_samples/s04_special_chars.txt",
+      "source_sha256": "130cf11fd51d0ec0140199137c1c69acbab5c03a22da14f44fce8a153b5e2945",
+      "source_bytes": 238,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-04-group-01",
+        "story-04-group-02",
+        "story-04-group-03"
+      ]
+    },
+    {
+      "story_id": "story-05",
+      "source_sample_id": "s05-single-shot",
+      "kind": "script",
+      "source_ref": "m7_samples/s05_single_shot.txt",
+      "source_sha256": "e05d8ff85a3fa8349675ec601cecf6856ba3a8238a5a149dae97e31383c481b1",
+      "source_bytes": 92,
+      "expected_stage": "visual",
+      "scene_group_ids": [
+        "story-05-group-01",
+        "story-05-group-02",
+        "story-05-group-03"
+      ]
+    },
+    {
+      "story_id": "story-06",
+      "source_sample_id": "n01-short-novel",
+      "kind": "novel",
+      "source_ref": "m7_samples/n01_short_novel.txt",
+      "source_sha256": "496dd14ba21fc26b06e559acbaa31be8805e4b96203a45b54d5b42eff6a174be",
+      "source_bytes": 242,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-06-group-01",
+        "story-06-group-02",
+        "story-06-group-03"
+      ]
+    },
+    {
+      "story_id": "story-07",
+      "source_sample_id": "n02-long-novel",
+      "kind": "novel",
+      "source_ref": "m7_samples/n02_long_novel.txt",
+      "source_sha256": "e74d46945813f972473ce167f3d22b20217c9e4523452e34d0f2cf63ef30cc3c",
+      "source_bytes": 14852,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-07-group-01",
+        "story-07-group-02",
+        "story-07-group-03"
+      ]
+    },
+    {
+      "story_id": "story-08",
+      "source_sample_id": "n03-dialogue-novel",
+      "kind": "novel",
+      "source_ref": "m7_samples/n03_dialogue_novel.txt",
+      "source_sha256": "f894ef9b75ae367fb5a5458b307989c745669a71e8792fd56ae755461d577b8a",
+      "source_bytes": 213,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-08-group-01",
+        "story-08-group-02",
+        "story-08-group-03"
+      ]
+    },
+    {
+      "story_id": "story-09",
+      "source_sample_id": "n04-scenery-novel",
+      "kind": "novel",
+      "source_ref": "m7_samples/n04_scenery_novel.txt",
+      "source_sha256": "5cab63715b5a8e19fe98d900fcc035a47f0b1b4d602d26a47f9c0ed69a653560",
+      "source_bytes": 255,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-09-group-01",
+        "story-09-group-02",
+        "story-09-group-03"
+      ]
+    },
+    {
+      "story_id": "story-10",
+      "source_sample_id": "n05-formatted-novel",
+      "kind": "novel",
+      "source_ref": "m7_samples/n05_formatted_novel.txt",
+      "source_sha256": "b6fafa64dd9b5a7c489d6db756cd60e47441b0042da2000e79b7d621f41b9249",
+      "source_bytes": 280,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-10-group-01",
+        "story-10-group-02",
+        "story-10-group-03"
+      ]
+    },
+    {
+      "story_id": "story-11",
+      "source_sample_id": "c01-legacy-v2",
+      "kind": "legacy_storyboard",
+      "source_ref": "m7_samples/c01_legacy_v2.json",
+      "source_sha256": "97bc8f0e566807d92c359a672186aa9c0b1740e38697e240e9d639c0e0773611",
+      "source_bytes": 1017,
+      "expected_stage": "video_prompt+visual",
+      "scene_group_ids": [
+        "story-11-group-01",
+        "story-11-group-02",
+        "story-11-group-03"
+      ]
+    },
+    {
+      "story_id": "story-12",
+      "source_sample_id": "c02-legacy-v1",
+      "kind": "legacy_storyboard",
+      "source_ref": "m7_samples/c02_legacy_v1.json",
+      "source_sha256": "4e4b8de19a8c93d12e09c03bd8d10ae009e36cb432a4ef35d4b9d3b6088c3112",
+      "source_bytes": 490,
+      "expected_stage": "video_prompt+visual",
+      "scene_group_ids": [
+        "story-12-group-01",
+        "story-12-group-02",
+        "story-12-group-03"
+      ]
+    },
+    {
+      "story_id": "story-13",
+      "source_sample_id": "c03-legacy-mixed",
+      "kind": "legacy_storyboard",
+      "source_ref": "m7_samples/c03_legacy_mixed.json",
+      "source_sha256": "630f981a4b3725da75204558fc73189cb34d338382a8e356223919c9352d8341",
+      "source_bytes": 830,
+      "expected_stage": "video_prompt+visual",
+      "scene_group_ids": [
+        "story-13-group-01",
+        "story-13-group-02",
+        "story-13-group-03"
+      ]
+    },
+    {
+      "story_id": "story-14",
+      "source_sample_id": "c04-legacy-long",
+      "kind": "legacy_storyboard",
+      "source_ref": "m7_samples/c04_legacy_long.json",
+      "source_sha256": "eb1b12c4f02c712f264a4fd3c92dc848e62f0a475d9e469c62953a61b4d46071",
+      "source_bytes": 12142,
+      "expected_stage": "video_prompt+visual",
+      "scene_group_ids": [
+        "story-14-group-01",
+        "story-14-group-02",
+        "story-14-group-03"
+      ]
+    },
+    {
+      "story_id": "story-15",
+      "source_sample_id": "c05-legacy-silent",
+      "kind": "legacy_storyboard",
+      "source_ref": "m7_samples/c05_legacy_silent.json",
+      "source_sha256": "c377ebadb44f95c264fb980906439f88d3c7446221b918f8e6d2f52d69121ba1",
+      "source_bytes": 859,
+      "expected_stage": "video_prompt+visual",
+      "scene_group_ids": [
+        "story-15-group-01",
+        "story-15-group-02",
+        "story-15-group-03"
+      ]
+    },
+    {
+      "story_id": "story-16",
+      "source_sample_id": "x01-duplicate-name",
+      "kind": "script",
+      "source_ref": "m7_samples/x01_duplicate_name.txt",
+      "source_sha256": "721a5fe215a27bf952fcb0bfc4d9feb36d6dd222779dea2d8483ee1a3db9a436",
+      "source_bytes": 144,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-16-group-01",
+        "story-16-group-02",
+        "story-16-group-03"
+      ]
+    },
+    {
+      "story_id": "story-17",
+      "source_sample_id": "x02-multi-scene",
+      "kind": "script",
+      "source_ref": "m7_samples/x02_multi_scene.txt",
+      "source_sha256": "12a327b50bc5c706d8b9a9f1364b7e3b23dcc09483a947779ef9ca140036432c",
+      "source_bytes": 474,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-17-group-01",
+        "story-17-group-02",
+        "story-17-group-03"
+      ]
+    },
+    {
+      "story_id": "story-18",
+      "source_sample_id": "x03-mixed-cues",
+      "kind": "script",
+      "source_ref": "m7_samples/x03_mixed_cues.txt",
+      "source_sha256": "71f72e8078a01c3ed0f04335e6b845698bdf53e0da79afdbb316321ee9b9225c",
+      "source_bytes": 142,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-18-group-01",
+        "story-18-group-02",
+        "story-18-group-03"
+      ]
+    },
+    {
+      "story_id": "story-19",
+      "source_sample_id": "x04-punctuation-storm",
+      "kind": "script",
+      "source_ref": "m7_samples/x04_punctuation_storm.txt",
+      "source_sha256": "b71d5271ed2e9f36c85b4c21a01f283463ee384488839fe7a6875b6d510351d2",
+      "source_bytes": 185,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-19-group-01",
+        "story-19-group-02",
+        "story-19-group-03"
+      ]
+    },
+    {
+      "story_id": "story-20",
+      "source_sample_id": "x05-eight-roles",
+      "kind": "script",
+      "source_ref": "m7_samples/x05_eight_roles.txt",
+      "source_sha256": "a467e927fc37e5d27da4ec61ddc2cd34aea18dc6ddcc7a808826ada8824823c8",
+      "source_bytes": 279,
+      "expected_stage": "voice_tts+visual",
+      "scene_group_ids": [
+        "story-20-group-01",
+        "story-20-group-02",
+        "story-20-group-03"
+      ]
+    }
+  ],
+  "scene_groups": [
+    {
+      "group_id": "story-01-group-01",
+      "story_id": "story-01",
+      "ordinal": 1,
+      "coverage_codes": [
+        "multi_character"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/s01_short_dialogue.txt",
+        "source_sha256": "a04def2bb313b6df9bad307b0cfd9db3261842c2e3356c8a6ca558025d95effc",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-01-group-02",
+      "story_id": "story-01",
+      "ordinal": 2,
+      "coverage_codes": [
+        "key_prop_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/s01_short_dialogue.txt",
+        "source_sha256": "a04def2bb313b6df9bad307b0cfd9db3261842c2e3356c8a6ca558025d95effc",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-01-group-03",
+      "story_id": "story-01",
+      "ordinal": 3,
+      "coverage_codes": [
+        "action_continuity"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/s01_short_dialogue.txt",
+        "source_sha256": "a04def2bb313b6df9bad307b0cfd9db3261842c2e3356c8a6ca558025d95effc",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-02-group-01",
+      "story_id": "story-02",
+      "ordinal": 1,
+      "coverage_codes": [
+        "duplicate_name_identity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/s02_monologue.txt",
+        "source_sha256": "a7529cb067d89de9ae8e88e8bfcc59b8411800ea67f4efda46529c14e425575e",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-02-group-02",
+      "story_id": "story-02",
+      "ordinal": 2,
+      "coverage_codes": [
+        "wardrobe_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/s02_monologue.txt",
+        "source_sha256": "a7529cb067d89de9ae8e88e8bfcc59b8411800ea67f4efda46529c14e425575e",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-02-group-03",
+      "story_id": "story-02",
+      "ordinal": 3,
+      "coverage_codes": [
+        "day_night_transition"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/s02_monologue.txt",
+        "source_sha256": "a7529cb067d89de9ae8e88e8bfcc59b8411800ea67f4efda46529c14e425575e",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-03-group-01",
+      "story_id": "story-03",
+      "ordinal": 1,
+      "coverage_codes": [
+        "complex_composition"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/s03_silent_action.txt",
+        "source_sha256": "f705fde98fde028e07c9b4f592e861ecb0c28a181b633ad76ea99166870ff0f1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-03-group-02",
+      "story_id": "story-03",
+      "ordinal": 2,
+      "coverage_codes": [
+        "multi_character"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/s03_silent_action.txt",
+        "source_sha256": "f705fde98fde028e07c9b4f592e861ecb0c28a181b633ad76ea99166870ff0f1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-03-group-03",
+      "story_id": "story-03",
+      "ordinal": 3,
+      "coverage_codes": [
+        "wardrobe_continuity"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/s03_silent_action.txt",
+        "source_sha256": "f705fde98fde028e07c9b4f592e861ecb0c28a181b633ad76ea99166870ff0f1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-04-group-01",
+      "story_id": "story-04",
+      "ordinal": 1,
+      "coverage_codes": [
+        "key_prop_continuity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/s04_special_chars.txt",
+        "source_sha256": "130cf11fd51d0ec0140199137c1c69acbab5c03a22da14f44fce8a153b5e2945",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-04-group-02",
+      "story_id": "story-04",
+      "ordinal": 2,
+      "coverage_codes": [
+        "action_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/s04_special_chars.txt",
+        "source_sha256": "130cf11fd51d0ec0140199137c1c69acbab5c03a22da14f44fce8a153b5e2945",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-04-group-03",
+      "story_id": "story-04",
+      "ordinal": 3,
+      "coverage_codes": [
+        "text_boundary"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/s04_special_chars.txt",
+        "source_sha256": "130cf11fd51d0ec0140199137c1c69acbab5c03a22da14f44fce8a153b5e2945",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-05-group-01",
+      "story_id": "story-05",
+      "ordinal": 1,
+      "coverage_codes": [
+        "day_night_transition"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/s05_single_shot.txt",
+        "source_sha256": "e05d8ff85a3fa8349675ec601cecf6856ba3a8238a5a149dae97e31383c481b1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-05-group-02",
+      "story_id": "story-05",
+      "ordinal": 2,
+      "coverage_codes": [
+        "complex_composition"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/s05_single_shot.txt",
+        "source_sha256": "e05d8ff85a3fa8349675ec601cecf6856ba3a8238a5a149dae97e31383c481b1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-05-group-03",
+      "story_id": "story-05",
+      "ordinal": 3,
+      "coverage_codes": [
+        "single_character_baseline"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/s05_single_shot.txt",
+        "source_sha256": "e05d8ff85a3fa8349675ec601cecf6856ba3a8238a5a149dae97e31383c481b1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-06-group-01",
+      "story_id": "story-06",
+      "ordinal": 1,
+      "coverage_codes": [
+        "action_continuity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/n01_short_novel.txt",
+        "source_sha256": "496dd14ba21fc26b06e559acbaa31be8805e4b96203a45b54d5b42eff6a174be",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-06-group-02",
+      "story_id": "story-06",
+      "ordinal": 2,
+      "coverage_codes": [
+        "duplicate_name_identity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/n01_short_novel.txt",
+        "source_sha256": "496dd14ba21fc26b06e559acbaa31be8805e4b96203a45b54d5b42eff6a174be",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-06-group-03",
+      "story_id": "story-06",
+      "ordinal": 3,
+      "coverage_codes": [
+        "silent_action"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/n01_short_novel.txt",
+        "source_sha256": "496dd14ba21fc26b06e559acbaa31be8805e4b96203a45b54d5b42eff6a174be",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-07-group-01",
+      "story_id": "story-07",
+      "ordinal": 1,
+      "coverage_codes": [
+        "multi_character"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/n02_long_novel.txt",
+        "source_sha256": "e74d46945813f972473ce167f3d22b20217c9e4523452e34d0f2cf63ef30cc3c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-07-group-02",
+      "story_id": "story-07",
+      "ordinal": 2,
+      "coverage_codes": [
+        "wardrobe_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/n02_long_novel.txt",
+        "source_sha256": "e74d46945813f972473ce167f3d22b20217c9e4523452e34d0f2cf63ef30cc3c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-07-group-03",
+      "story_id": "story-07",
+      "ordinal": 3,
+      "coverage_codes": [
+        "legacy_compatibility"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/n02_long_novel.txt",
+        "source_sha256": "e74d46945813f972473ce167f3d22b20217c9e4523452e34d0f2cf63ef30cc3c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-08-group-01",
+      "story_id": "story-08",
+      "ordinal": 1,
+      "coverage_codes": [
+        "key_prop_continuity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/n03_dialogue_novel.txt",
+        "source_sha256": "f894ef9b75ae367fb5a5458b307989c745669a71e8792fd56ae755461d577b8a",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-08-group-02",
+      "story_id": "story-08",
+      "ordinal": 2,
+      "coverage_codes": [
+        "complex_composition"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/n03_dialogue_novel.txt",
+        "source_sha256": "f894ef9b75ae367fb5a5458b307989c745669a71e8792fd56ae755461d577b8a",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-08-group-03",
+      "story_id": "story-08",
+      "ordinal": 3,
+      "coverage_codes": [
+        "unverifiable_gate"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/n03_dialogue_novel.txt",
+        "source_sha256": "f894ef9b75ae367fb5a5458b307989c745669a71e8792fd56ae755461d577b8a",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-09-group-01",
+      "story_id": "story-09",
+      "ordinal": 1,
+      "coverage_codes": [
+        "day_night_transition"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/n04_scenery_novel.txt",
+        "source_sha256": "5cab63715b5a8e19fe98d900fcc035a47f0b1b4d602d26a47f9c0ed69a653560",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-09-group-02",
+      "story_id": "story-09",
+      "ordinal": 2,
+      "coverage_codes": [
+        "action_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/n04_scenery_novel.txt",
+        "source_sha256": "5cab63715b5a8e19fe98d900fcc035a47f0b1b4d602d26a47f9c0ed69a653560",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-09-group-03",
+      "story_id": "story-09",
+      "ordinal": 3,
+      "coverage_codes": [
+        "text_boundary"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/n04_scenery_novel.txt",
+        "source_sha256": "5cab63715b5a8e19fe98d900fcc035a47f0b1b4d602d26a47f9c0ed69a653560",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-10-group-01",
+      "story_id": "story-10",
+      "ordinal": 1,
+      "coverage_codes": [
+        "duplicate_name_identity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/n05_formatted_novel.txt",
+        "source_sha256": "b6fafa64dd9b5a7c489d6db756cd60e47441b0042da2000e79b7d621f41b9249",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-10-group-02",
+      "story_id": "story-10",
+      "ordinal": 2,
+      "coverage_codes": [
+        "multi_character"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/n05_formatted_novel.txt",
+        "source_sha256": "b6fafa64dd9b5a7c489d6db756cd60e47441b0042da2000e79b7d621f41b9249",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-10-group-03",
+      "story_id": "story-10",
+      "ordinal": 3,
+      "coverage_codes": [
+        "single_character_baseline"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/n05_formatted_novel.txt",
+        "source_sha256": "b6fafa64dd9b5a7c489d6db756cd60e47441b0042da2000e79b7d621f41b9249",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-11-group-01",
+      "story_id": "story-11",
+      "ordinal": 1,
+      "coverage_codes": [
+        "multi_character"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/c01_legacy_v2.json",
+        "source_sha256": "97bc8f0e566807d92c359a672186aa9c0b1740e38697e240e9d639c0e0773611",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-11-group-02",
+      "story_id": "story-11",
+      "ordinal": 2,
+      "coverage_codes": [
+        "key_prop_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/c01_legacy_v2.json",
+        "source_sha256": "97bc8f0e566807d92c359a672186aa9c0b1740e38697e240e9d639c0e0773611",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-11-group-03",
+      "story_id": "story-11",
+      "ordinal": 3,
+      "coverage_codes": [
+        "action_continuity"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/c01_legacy_v2.json",
+        "source_sha256": "97bc8f0e566807d92c359a672186aa9c0b1740e38697e240e9d639c0e0773611",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-12-group-01",
+      "story_id": "story-12",
+      "ordinal": 1,
+      "coverage_codes": [
+        "duplicate_name_identity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/c02_legacy_v1.json",
+        "source_sha256": "4e4b8de19a8c93d12e09c03bd8d10ae009e36cb432a4ef35d4b9d3b6088c3112",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-12-group-02",
+      "story_id": "story-12",
+      "ordinal": 2,
+      "coverage_codes": [
+        "wardrobe_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/c02_legacy_v1.json",
+        "source_sha256": "4e4b8de19a8c93d12e09c03bd8d10ae009e36cb432a4ef35d4b9d3b6088c3112",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-12-group-03",
+      "story_id": "story-12",
+      "ordinal": 3,
+      "coverage_codes": [
+        "day_night_transition"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/c02_legacy_v1.json",
+        "source_sha256": "4e4b8de19a8c93d12e09c03bd8d10ae009e36cb432a4ef35d4b9d3b6088c3112",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-13-group-01",
+      "story_id": "story-13",
+      "ordinal": 1,
+      "coverage_codes": [
+        "complex_composition"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/c03_legacy_mixed.json",
+        "source_sha256": "630f981a4b3725da75204558fc73189cb34d338382a8e356223919c9352d8341",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-13-group-02",
+      "story_id": "story-13",
+      "ordinal": 2,
+      "coverage_codes": [
+        "multi_character"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/c03_legacy_mixed.json",
+        "source_sha256": "630f981a4b3725da75204558fc73189cb34d338382a8e356223919c9352d8341",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-13-group-03",
+      "story_id": "story-13",
+      "ordinal": 3,
+      "coverage_codes": [
+        "wardrobe_continuity"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/c03_legacy_mixed.json",
+        "source_sha256": "630f981a4b3725da75204558fc73189cb34d338382a8e356223919c9352d8341",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-14-group-01",
+      "story_id": "story-14",
+      "ordinal": 1,
+      "coverage_codes": [
+        "key_prop_continuity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/c04_legacy_long.json",
+        "source_sha256": "eb1b12c4f02c712f264a4fd3c92dc848e62f0a475d9e469c62953a61b4d46071",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-14-group-02",
+      "story_id": "story-14",
+      "ordinal": 2,
+      "coverage_codes": [
+        "action_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/c04_legacy_long.json",
+        "source_sha256": "eb1b12c4f02c712f264a4fd3c92dc848e62f0a475d9e469c62953a61b4d46071",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-14-group-03",
+      "story_id": "story-14",
+      "ordinal": 3,
+      "coverage_codes": [
+        "text_boundary"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/c04_legacy_long.json",
+        "source_sha256": "eb1b12c4f02c712f264a4fd3c92dc848e62f0a475d9e469c62953a61b4d46071",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-15-group-01",
+      "story_id": "story-15",
+      "ordinal": 1,
+      "coverage_codes": [
+        "day_night_transition"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/c05_legacy_silent.json",
+        "source_sha256": "c377ebadb44f95c264fb980906439f88d3c7446221b918f8e6d2f52d69121ba1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-15-group-02",
+      "story_id": "story-15",
+      "ordinal": 2,
+      "coverage_codes": [
+        "complex_composition"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/c05_legacy_silent.json",
+        "source_sha256": "c377ebadb44f95c264fb980906439f88d3c7446221b918f8e6d2f52d69121ba1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-15-group-03",
+      "story_id": "story-15",
+      "ordinal": 3,
+      "coverage_codes": [
+        "single_character_baseline"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/c05_legacy_silent.json",
+        "source_sha256": "c377ebadb44f95c264fb980906439f88d3c7446221b918f8e6d2f52d69121ba1",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-16-group-01",
+      "story_id": "story-16",
+      "ordinal": 1,
+      "coverage_codes": [
+        "action_continuity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/x01_duplicate_name.txt",
+        "source_sha256": "721a5fe215a27bf952fcb0bfc4d9feb36d6dd222779dea2d8483ee1a3db9a436",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-16-group-02",
+      "story_id": "story-16",
+      "ordinal": 2,
+      "coverage_codes": [
+        "duplicate_name_identity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/x01_duplicate_name.txt",
+        "source_sha256": "721a5fe215a27bf952fcb0bfc4d9feb36d6dd222779dea2d8483ee1a3db9a436",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-16-group-03",
+      "story_id": "story-16",
+      "ordinal": 3,
+      "coverage_codes": [
+        "silent_action"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/x01_duplicate_name.txt",
+        "source_sha256": "721a5fe215a27bf952fcb0bfc4d9feb36d6dd222779dea2d8483ee1a3db9a436",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-17-group-01",
+      "story_id": "story-17",
+      "ordinal": 1,
+      "coverage_codes": [
+        "multi_character"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/x02_multi_scene.txt",
+        "source_sha256": "12a327b50bc5c706d8b9a9f1364b7e3b23dcc09483a947779ef9ca140036432c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-17-group-02",
+      "story_id": "story-17",
+      "ordinal": 2,
+      "coverage_codes": [
+        "wardrobe_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/x02_multi_scene.txt",
+        "source_sha256": "12a327b50bc5c706d8b9a9f1364b7e3b23dcc09483a947779ef9ca140036432c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-17-group-03",
+      "story_id": "story-17",
+      "ordinal": 3,
+      "coverage_codes": [
+        "legacy_compatibility"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/x02_multi_scene.txt",
+        "source_sha256": "12a327b50bc5c706d8b9a9f1364b7e3b23dcc09483a947779ef9ca140036432c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-18-group-01",
+      "story_id": "story-18",
+      "ordinal": 1,
+      "coverage_codes": [
+        "key_prop_continuity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/x03_mixed_cues.txt",
+        "source_sha256": "71f72e8078a01c3ed0f04335e6b845698bdf53e0da79afdbb316321ee9b9225c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-18-group-02",
+      "story_id": "story-18",
+      "ordinal": 2,
+      "coverage_codes": [
+        "complex_composition"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/x03_mixed_cues.txt",
+        "source_sha256": "71f72e8078a01c3ed0f04335e6b845698bdf53e0da79afdbb316321ee9b9225c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-18-group-03",
+      "story_id": "story-18",
+      "ordinal": 3,
+      "coverage_codes": [
+        "unverifiable_gate"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/x03_mixed_cues.txt",
+        "source_sha256": "71f72e8078a01c3ed0f04335e6b845698bdf53e0da79afdbb316321ee9b9225c",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-19-group-01",
+      "story_id": "story-19",
+      "ordinal": 1,
+      "coverage_codes": [
+        "day_night_transition"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/x04_punctuation_storm.txt",
+        "source_sha256": "b71d5271ed2e9f36c85b4c21a01f283463ee384488839fe7a6875b6d510351d2",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-19-group-02",
+      "story_id": "story-19",
+      "ordinal": 2,
+      "coverage_codes": [
+        "action_continuity"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/x04_punctuation_storm.txt",
+        "source_sha256": "b71d5271ed2e9f36c85b4c21a01f283463ee384488839fe7a6875b6d510351d2",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-19-group-03",
+      "story_id": "story-19",
+      "ordinal": 3,
+      "coverage_codes": [
+        "text_boundary"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/x04_punctuation_storm.txt",
+        "source_sha256": "b71d5271ed2e9f36c85b4c21a01f283463ee384488839fe7a6875b6d510351d2",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-20-group-01",
+      "story_id": "story-20",
+      "ordinal": 1,
+      "coverage_codes": [
+        "duplicate_name_identity"
+      ],
+      "selection_basis": "baseline",
+      "source_binding": {
+        "source_ref": "m7_samples/x05_eight_roles.txt",
+        "source_sha256": "a467e927fc37e5d27da4ec61ddc2cd34aea18dc6ddcc7a808826ada8824823c8",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-20-group-02",
+      "story_id": "story-20",
+      "ordinal": 2,
+      "coverage_codes": [
+        "multi_character"
+      ],
+      "selection_basis": "continuity_pair",
+      "source_binding": {
+        "source_ref": "m7_samples/x05_eight_roles.txt",
+        "source_sha256": "a467e927fc37e5d27da4ec61ddc2cd34aea18dc6ddcc7a808826ada8824823c8",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    },
+    {
+      "group_id": "story-20-group-03",
+      "story_id": "story-20",
+      "ordinal": 3,
+      "coverage_codes": [
+        "single_character_baseline"
+      ],
+      "selection_basis": "edge_case_probe",
+      "source_binding": {
+        "source_ref": "m7_samples/x05_eight_roles.txt",
+        "source_sha256": "a467e927fc37e5d27da4ec61ddc2cd34aea18dc6ddcc7a808826ada8824823c8",
+        "storyboard_binding": "bind after the storyboard artifact is selected; no guessed scene IDs"
+      },
+      "required_evidence": [
+        "agent_candidate_image",
+        "character_identity_cards",
+        "cost_record_or_zero_cost_fixture_record",
+        "legacy_candidate_image",
+        "production_event_log",
+        "revision_trace",
+        "scene_master",
+        "shot_inputs",
+        "source_or_storyboard_binding",
+        "visual_agent_run",
+        "visual_event_log",
+        "visual_review_evidence"
+      ],
+      "execution_status": "not_started"
+    }
+  ],
+  "execution": {
+    "status": "not_started",
+    "provider_calls": 0,
+    "paid_amount_minor": 0,
+    "human_review_rows": 0,
+    "note": "This is a pre-registered scope; it is not evidence that images or reviews already exist."
+  },
+  "fingerprint": "sha256:95a64b244719ce99c01f7b04057b3d077fb9831257afb3f6fc290c04aa417a05"
+}

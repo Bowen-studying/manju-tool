@@ -617,6 +617,9 @@ manju pipeline --novel "小说.txt" -o "D:\我的项目\第一集"
 M7 最终发布验收、解盲结果和复现边界见
 [`docs/PRODUCTION_RUN_M7_FINAL_ACCEPTANCE.md`](docs/PRODUCTION_RUN_M7_FINAL_ACCEPTANCE.md)。当前候选的精确 Windows/Linux 测试结果记录在该报告中；dirty 候选结果与历史 clean-commit 证据分开陈述。
 
+M8 图像 Agent 的固定评测集、匿名 A/B 协议、三评委评分门槛及发布边界见
+[`docs/PRODUCTION_RUN_M8_VISUAL_QUALITY_CONTRACT.md`](docs/PRODUCTION_RUN_M8_VISUAL_QUALITY_CONTRACT.md)。评测工具只处理已经生成的本地证据，不会调用 Provider；正式打包会用外部 HMAC key 验证 ProductionRun 签名但不会保存或输出该 key。真实图像生成和视觉盲评仍需单独授权与人工执行。
+
 本地验证：
 
 ```bash

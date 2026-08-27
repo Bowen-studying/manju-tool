@@ -1,0 +1,218 @@
+{
+  "schema_version": "m8-visual-quality-contract-v1",
+  "contract_id": "m8-visual-agent-quality-v1",
+  "status": "frozen",
+  "baseline": {
+    "commit": "d7191cd",
+    "branch": "feat/m3.4.1-audit-baseline",
+    "comparison_baseline": "legacy"
+  },
+  "scope": {
+    "unit": "one story + one pre-registered scene group + one comparable A/B image pair",
+    "stories_minimum": 20,
+    "scene_groups_minimum": 60,
+    "storyboard_binding": "bind every group to the selected storyboard artifact and source evidence before review",
+    "image_generation": "not performed by this contract tool; paid generation remains approval/grant gated"
+  },
+  "treatments": {
+    "candidate": "agent",
+    "baseline": "legacy",
+    "comparison_rule": "same source, same storyboard binding, same scene-group scope, same review package",
+    "excluded_pairs": "incomplete or non-comparable pairs are excluded and listed; they are never counted as failures or wins"
+  },
+  "required_coverage": {
+    "codes": [
+      "multi_character",
+      "duplicate_name_identity",
+      "wardrobe_continuity",
+      "key_prop_continuity",
+      "day_night_transition",
+      "action_continuity",
+      "complex_composition"
+    ],
+    "catalog": [
+      {
+        "code": "multi_character",
+        "label": "多人关系",
+        "requirement": "至少一个组必须同时呈现两名或以上可区分人物及其空间关系。"
+      },
+      {
+        "code": "duplicate_name_identity",
+        "label": "重名与身份",
+        "requirement": "至少一个组必须能核对重名角色的身份、数量和指代，不能靠名字猜测。"
+      },
+      {
+        "code": "wardrobe_continuity",
+        "label": "服装连续性",
+        "requirement": "跨相邻镜头核对服装、发型和可见状态；变化必须有来源依据。"
+      },
+      {
+        "code": "key_prop_continuity",
+        "label": "关键道具",
+        "requirement": "核对道具身份、数量、状态、空间位置和必要的相对尺度。"
+      },
+      {
+        "code": "day_night_transition",
+        "label": "昼夜变化",
+        "requirement": "跨场景或相邻镜头核对昼夜、光线和时间状态，不允许无来源跳变。"
+      },
+      {
+        "code": "action_continuity",
+        "label": "动作连续性",
+        "requirement": "核对动作发生顺序、前后状态和因果关系，尤其是关键动作。"
+      },
+      {
+        "code": "complex_composition",
+        "label": "复杂构图",
+        "requirement": "覆盖前后景、遮挡、多人站位或多个关键物体的可制作构图。"
+      },
+      {
+        "code": "single_character_baseline",
+        "label": "单人基线",
+        "requirement": "提供低复杂度基线，用来区分复杂场景收益与基本生成稳定性。"
+      },
+      {
+        "code": "silent_action",
+        "label": "无对白动作",
+        "requirement": "不依赖对白，单独核对视觉动作和情绪表达。"
+      },
+      {
+        "code": "text_boundary",
+        "label": "文字边界",
+        "requirement": "精确文字有要求时核对可读性；无要求时不得把乱码当作来源事实。"
+      },
+      {
+        "code": "legacy_compatibility",
+        "label": "旧路径兼容",
+        "requirement": "至少一组来自旧 storyboard 输入，核对旧格式映射和可比较产物。"
+      },
+      {
+        "code": "unverifiable_gate",
+        "label": "不可验证门",
+        "requirement": "至少一组保留证据不足时进入人工门的路径，不用规则检查冒充审美通过。"
+      }
+    ],
+    "minimum_groups_per_code": 2
+  },
+  "required_evidence_per_group": [
+    "agent_candidate_image",
+    "character_identity_cards",
+    "cost_record_or_zero_cost_fixture_record",
+    "legacy_candidate_image",
+    "production_event_log",
+    "revision_trace",
+    "scene_master",
+    "shot_inputs",
+    "source_or_storyboard_binding",
+    "visual_agent_run",
+    "visual_event_log",
+    "visual_review_evidence"
+  ],
+  "blind_ab": {
+    "public_materials": [
+      "input.txt",
+      "A/image.<ext>",
+      "B/image.<ext>",
+      "manifest.json"
+    ],
+    "public_must_not_contain": [
+      "engine names",
+      "provider/model names",
+      "run IDs",
+      "absolute source paths",
+      "credentials",
+      "private A/B mapping",
+      "reviewer results"
+    ],
+    "private_mapping": "store separately from the reviewer package; never distribute to reviewers",
+    "randomization": "derive the formal seed from the frozen sample fingerprint and balance A/B within stories",
+    "reviewer_perspectives": [
+      "content",
+      "visual_production",
+      "target_user"
+    ],
+    "reviewer_count": 3
+  },
+  "scoring": {
+    "scale": {
+      "minimum": 1,
+      "maximum": 5,
+      "higher_is_better": true
+    },
+    "dimensions": [
+      "source_fidelity",
+      "character_consistency",
+      "wardrobe_continuity",
+      "prop_continuity",
+      "composition_readability",
+      "action_continuity",
+      "production_readiness"
+    ],
+    "dimension_weights": {
+      "source_fidelity": 1,
+      "character_consistency": 1,
+      "wardrobe_continuity": 1,
+      "prop_continuity": 1,
+      "composition_readability": 1,
+      "action_continuity": 1,
+      "production_readiness": 1
+    },
+    "preference_values": [
+      "A",
+      "B",
+      "tie"
+    ],
+    "group_winner": "strict majority of the three preference votes; otherwise tie",
+    "missing_or_invalid_row": "the visual gate is not ready; do not impute a score"
+  },
+  "severe_errors": {
+    "definition": "a visible error that changes source meaning/identity/time/space or makes the image unusable for the declared shot",
+    "codes": [
+      "source_fact_invented_or_omitted",
+      "character_identity_or_count_wrong",
+      "wardrobe_state_breaks_continuity",
+      "key_prop_identity_state_or_scale_wrong",
+      "spatial_relation_or_action_time_wrong",
+      "unusable_artifact_or_multi_panel_output"
+    ],
+    "majority_rule": "at least 2 of 3 reviewers mark the same side severe in a group",
+    "review_requirement": "a severe mark requires at least one code and a concrete note; no generic pass/fail text",
+    "not_severe_by_itself": [
+      "mere style preference",
+      "minor anatomy or rendering blemish",
+      "different but source-compatible framing"
+    ]
+  },
+  "budget": {
+    "offline_contract_and_packaging_calls": 0,
+    "offline_provider_calls": 0,
+    "offline_paid_amount_minor": 0,
+    "per_story_generation_budget": "freeze before any real run; use the project Grant and never infer a price here",
+    "retry_policy": "no automatic paid retry for unknown outcomes; local packaging never retries a provider"
+  },
+  "visual_gate": {
+    "preference_threshold": 0.6,
+    "preference_statistics": "story-clustered one-sided 95% lower bound must meet the threshold",
+    "source_fidelity": "story-clustered one-sided 95% lower bound of agent-minus-legacy must be >= 0",
+    "character_consistency": "story-clustered one-sided 95% lower bound of agent-minus-legacy must be >= 0",
+    "absolute_score_floor": 3.0,
+    "severe_error_count": "agent majority-group count must be <= legacy majority-group count",
+    "agent_severe_error_rate_maximum": 0.1,
+    "coverage": "all required coverage codes must be represented in the frozen sample manifest"
+  },
+  "release_gates": {
+    "engineering": "all visual/M2/ProductionRun structure, approval, authorization, budget, recovery and no-duplicate tests pass",
+    "human_visual": "three independent blind reviewers complete every comparable pair; no automated rule result substitutes for this gate",
+    "real_execution": "any real image generation requires user approval, isolated account, allowed profile, small Grant and operator evidence",
+    "red_team": "three independent reviews close all high-priority findings",
+    "platform": "Windows/Linux full regression passes on a clean commit",
+    "default_route": "do not change the legacy default until every gate is evidenced"
+  },
+  "safety": {
+    "provider_calls": "never from this module or its freeze/aggregate commands",
+    "secret_handling": "formal verification reads only the external ProductionRun HMAC key; never persist or print it or Provider credentials",
+    "authority": "ProductionRun HMAC events, final m8_visual_evidence_attested witness, VisualStageAdapter receipts and approved grants remain authoritative",
+    "result_status": "aggregation may report visual_gate_passed/failed, never formal release without external evidence"
+  },
+  "fingerprint": "sha256:6bb9f8d602a4e57708e8dab8db8b4a49b191f75febe84906f51dc469b119c165"
+}

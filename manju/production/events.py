@@ -22,6 +22,7 @@ SENSITIVE_EVENT_TYPES = frozenset({
     "approval_requested", "approval_approved", "approval_rejected", "grant_issued",
     "grant_revoked", "call_reserved", "call_submitted", "call_settled", "call_reconciled",
     "manual_dispatch_prepared", "manual_result_imported", "manual_cost_reconciled", "manual_contractual_tariff_settled",
+    "m8_visual_evidence_attested",
 })
 
 
